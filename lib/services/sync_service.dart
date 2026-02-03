@@ -9,11 +9,16 @@ class SyncService {
 
   Future<bool> syncAll() async {
     print('SyncService: Starting sync...');
-    
-    // Check connectivity
+
     final connectivityResult = await _connectivity.checkConnectivity();
     if (connectivityResult.contains(ConnectivityResult.none)) {
       print('SyncService: No internet connection');
+      return false;
+    }
+
+    final canReachTelegram = await _telegram.canReachTelegram();
+    if (!canReachTelegram) {
+      print('SyncService: Network reachable but Telegram is not');
       return false;
     }
 
@@ -24,21 +29,25 @@ class SyncService {
     // Sync usage sessions
     final unsentSessions = await _database.getUnsentUsageSessions();
     print('SyncService: Found ${unsentSessions.length} unsent sessions');
-    
+
     if (unsentSessions.isEmpty) {
       print('SyncService: No unsent sessions to sync');
     } else {
       print('SyncService: Processing ${unsentSessions.length} sessions...');
       for (final session in unsentSessions) {
-        print('SyncService: Sending session ID ${session.id} for ${session.appName} (${session.packageName})');
+        print(
+          'SyncService: Sending session ID ${session.id} for ${session.appName} (${session.packageName})',
+        );
         try {
           final success = await _telegram.sendUsageReport(session);
           print('SyncService: Send result for session ${session.id}: $success');
           if (success && session.id != null) {
-            await _database.markUsageSessionSent(session.id!);
-            print('SyncService: Session ${session.id} marked as sent');
+            await _database.deleteUsageSession(session.id!);
+            print('SyncService: Session ${session.id} deleted after send');
           } else {
-            print('SyncService: Failed to send session ${session.id} - success: $success, id: ${session.id}');
+            print(
+              'SyncService: Failed to send session ${session.id} - success: $success, id: ${session.id}',
+            );
             allSuccess = false;
           }
         } catch (e, stackTrace) {
@@ -54,7 +63,7 @@ class SyncService {
     for (final interruption in unsentInterruptions) {
       final success = await _telegram.sendInterruptionReport(interruption);
       if (success && interruption.id != null) {
-        await _database.markInterruptionSent(interruption.id!);
+        await _database.deleteInterruption(interruption.id!);
       } else {
         allSuccess = false;
       }

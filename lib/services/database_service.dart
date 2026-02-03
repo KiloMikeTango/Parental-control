@@ -94,6 +94,15 @@ class DatabaseService {
     );
   }
 
+  Future<void> deleteUsageSession(int id) async {
+    final db = await database;
+    await db.delete(
+      'usage_sessions',
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
   Future<List<UsageSession>> getAllUsageSessions({
     DateTime? startDate,
     DateTime? endDate,
@@ -162,6 +171,15 @@ class DatabaseService {
     await db.update(
       'interruptions',
       {'sent': 1},
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  Future<void> deleteInterruption(int id) async {
+    final db = await database;
+    await db.delete(
+      'interruptions',
       where: 'id = ?',
       whereArgs: [id],
     );

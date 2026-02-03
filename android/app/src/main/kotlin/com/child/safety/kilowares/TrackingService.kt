@@ -161,6 +161,9 @@ class TrackingService : Service() {
                         // End previous session
                         handleAppSessionEnd(lastForegroundPackage!!, lastForegroundTime, eventTime)
                     }
+                    if (eventTime > 0) {
+                        handleAppSessionStart(currentPackage, eventTime)
+                    }
                     lastForegroundPackage = currentPackage
                     lastForegroundTime = eventTime
                 }
@@ -205,6 +208,36 @@ class TrackingService : Service() {
                 android.util.Log.d("TrackingService", "Saved session: $appName ($packageName) - ${duration}ms")
             } catch (e: Exception) {
                 android.util.Log.e("TrackingService", "Error handling app session end", e)
+                e.printStackTrace()
+            }
+        }
+    }
+
+    private fun handleAppSessionStart(packageName: String, startTime: Long) {
+        serviceScope.launch {
+            try {
+                val packageManager = packageManager
+                var appName = packageName
+
+                try {
+                    val appInfo = packageManager.getApplicationInfo(packageName, 0)
+                    appName = packageManager.getApplicationLabel(appInfo).toString()
+                } catch (e: android.content.pm.PackageManager.NameNotFoundException) {
+                    android.util.Log.w("TrackingService", "Could not get app name for $packageName, using package name")
+                } catch (e: Exception) {
+                    android.util.Log.w("TrackingService", "Error getting app name for $packageName: ${e.message}")
+                }
+
+                val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+                val eventKey = "enter_${System.currentTimeMillis()}"
+                val editor = prefs.edit()
+                editor.putString("flutter.${eventKey}_package", packageName)
+                editor.putString("flutter.${eventKey}_name", appName)
+                editor.putString("flutter.${eventKey}_time", startTime.toString())
+                editor.commit()
+                android.util.Log.d("TrackingService", "Stored enter event in SharedPreferences: flutter.$eventKey")
+            } catch (e: Exception) {
+                android.util.Log.e("TrackingService", "Error handling app session start", e)
                 e.printStackTrace()
             }
         }

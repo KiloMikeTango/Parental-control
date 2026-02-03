@@ -15,7 +15,7 @@ class MainApp extends ConsumerStatefulWidget {
   ConsumerState<MainApp> createState() => _MainAppState();
 }
 
-class _MainAppState extends ConsumerState<MainApp> {
+class _MainAppState  extends ConsumerState<MainApp> {
   @override
   void initState() {
     super.initState();
@@ -23,8 +23,14 @@ class _MainAppState extends ConsumerState<MainApp> {
   }
 
   Future<void> _initializeServices() async {
-    // Sync will be triggered by WorkManager
-    // Also trigger initial sync after a delay to ensure services are ready
+    final storage = ref.read(secureStorageProvider);
+    final tracking = ref.read(trackingServiceProvider);
+    final setupComplete = await storage.isSetupComplete();
+
+    if (setupComplete) {
+      await tracking.startTracking();
+    }
+
     Future.delayed(const Duration(seconds: 5), () async {
       try {
         final syncService = ref.read(syncServiceProvider);

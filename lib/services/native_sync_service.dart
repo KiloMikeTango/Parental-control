@@ -1,13 +1,17 @@
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
 import '../models/usage_session.dart';
 import '../models/heartbeat_log.dart';
 import '../models/interruption.dart';
 import '../services/database_service.dart';
 import '../services/sync_service.dart';
+import '../services/telegram_service.dart';
 import 'dart:async';
 
 class NativeSyncService {
   final DatabaseService _database = DatabaseService();
+  final TelegramService _telegram = TelegramService();
+  final Connectivity _connectivity = Connectivity();
   Timer? _syncTimer;
   Timer? _pendingSyncTimer;
   int _sessionsInsertedCount = 0;
@@ -16,12 +20,14 @@ class NativeSyncService {
   void startPolling() {
     print('NativeSync: Starting polling service');
     // Do immediate sync first
+    syncUsageStarts();
     syncUsageSessions();
     syncHeartbeats();
     syncInterruptions();
 
     _syncTimer = Timer.periodic(const Duration(seconds: 10), (_) async {
       print('NativeSync: Periodic sync triggered');
+      await syncUsageStarts();
       await syncUsageSessions();
       await syncHeartbeats();
       await syncInterruptions();
@@ -42,6 +48,74 @@ class NativeSyncService {
     _syncTimer = null;
     _pendingSyncTimer?.cancel();
     _pendingSyncTimer = null;
+  }
+
+  Future<bool> _hasConnection() async {
+    final connectivityResult = await _connectivity.checkConnectivity();
+    if (connectivityResult.contains(ConnectivityResult.none)) {
+      return false;
+    }
+    return await _telegram.canReachTelegram();
+  }
+
+  Future<void> syncUsageStarts() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final allKeys = prefs.getKeys();
+
+      final startKeys = allKeys
+          .where(
+            (key) =>
+                key.startsWith('flutter.enter_') && key.endsWith('_package'),
+          )
+          .toList();
+
+      final legacyKeys = allKeys
+          .where(
+            (key) =>
+                key.startsWith('enter_') &&
+                key.endsWith('_package') &&
+                !key.startsWith('flutter.'),
+          )
+          .toList();
+
+      final allStartKeys = [...startKeys, ...legacyKeys];
+
+      for (final key in allStartKeys) {
+        final isLegacy = !key.startsWith('flutter.');
+        final eventId = key
+            .replaceFirst('flutter.', '')
+            .replaceAll('_package', '');
+        final prefix = isLegacy ? '' : 'flutter.';
+
+        final packageName = prefs.getString(key);
+        final appName = prefs.getString('${prefix}${eventId}_name');
+        final timeStr = prefs.getString('${prefix}${eventId}_time');
+
+        if (packageName != null && timeStr != null) {
+          var sent = false;
+          final hasConnection = await _hasConnection();
+          if (hasConnection) {
+            try {
+              sent = await _telegram.sendCurrentAppReport(
+                appName: appName ?? packageName,
+                packageName: packageName,
+              );
+            } catch (e) {
+              print('NativeSync: Error sending current app report: $e');
+            }
+          }
+
+          if (sent) {
+            await prefs.remove(key);
+            await prefs.remove('${prefix}${eventId}_name');
+            await prefs.remove('${prefix}${eventId}_time');
+          }
+        }
+      }
+    } catch (e) {
+      print('Error syncing usage starts: $e');
+    }
   }
 
   Future<void> syncUsageSessions() async {
@@ -124,14 +198,28 @@ class NativeSyncService {
               durationMs: duration,
             );
 
-            // Insert into database
-            final dbSessionId = await _database.insertUsageSession(session);
-            _sessionsInsertedCount++;
-            print(
-              'NativeSync: Synced session: $appName ($packageName) - ${duration}ms, DB ID: $dbSessionId (Total inserted this cycle: $_sessionsInsertedCount)',
-            );
+            var sentNow = false;
+            final hasConnection = await _hasConnection();
+            if (hasConnection) {
+              try {
+                sentNow = await _telegram.sendUsageReport(session);
+              } catch (e) {
+                print('NativeSync: Error sending usage report: $e');
+              }
+            }
 
-            // Remove from SharedPreferences AFTER inserting to DB
+            if (!sentNow) {
+              final dbSessionId = await _database.insertUsageSession(session);
+              _sessionsInsertedCount++;
+              print(
+                'NativeSync: Queued session: $appName ($packageName) - ${duration}ms, DB ID: $dbSessionId (Total inserted this cycle: $_sessionsInsertedCount)',
+              );
+            } else {
+              print(
+                'NativeSync: Sent session immediately: $appName ($packageName) - ${duration}ms',
+              );
+            }
+
             await prefs.remove(key);
             await prefs.remove('${prefix}${sessionId}_name');
             await prefs.remove('${prefix}${sessionId}_start');
@@ -140,42 +228,41 @@ class NativeSyncService {
             if (durationStr != null)
               await prefs.remove('${prefix}${sessionId}_duration');
 
-            // Trigger sync after inserting
-            // Use debounce: wait 2 seconds for more sessions, then sync
-            _pendingSyncTimer?.cancel();
-            _pendingSyncTimer = Timer(const Duration(seconds: 2), () async {
-              try {
-                final count = _sessionsInsertedCount;
-                print(
-                  'NativeSync: Triggering Telegram sync after batch insert ($count sessions)',
-                );
-                final syncService = SyncService();
-                final success = await syncService.syncAll();
-                print('NativeSync: Sync result: $success');
-                _sessionsInsertedCount = 0; // Reset counter after sync
-              } catch (e, stackTrace) {
-                print(
-                  'NativeSync: Error triggering sync after session insert: $e',
-                );
-                print('NativeSync: Stack trace: $stackTrace');
-              }
-            });
-
-            // Also trigger a backup sync after 5 seconds to ensure nothing is missed
-            Future.delayed(const Duration(seconds: 5), () async {
-              if (_sessionsInsertedCount > 0) {
-                print(
-                  'NativeSync: Backup sync triggered ($_sessionsInsertedCount sessions still pending)',
-                );
+            if (!sentNow) {
+              _pendingSyncTimer?.cancel();
+              _pendingSyncTimer = Timer(const Duration(seconds: 2), () async {
                 try {
+                  final count = _sessionsInsertedCount;
+                  print(
+                    'NativeSync: Triggering Telegram sync after batch insert ($count sessions)',
+                  );
                   final syncService = SyncService();
-                  await syncService.syncAll();
+                  final success = await syncService.syncAll();
+                  print('NativeSync: Sync result: $success');
                   _sessionsInsertedCount = 0;
-                } catch (e) {
-                  print('NativeSync: Error in backup sync: $e');
+                } catch (e, stackTrace) {
+                  print(
+                    'NativeSync: Error triggering sync after session insert: $e',
+                  );
+                  print('NativeSync: Stack trace: $stackTrace');
                 }
-              }
-            });
+              });
+
+              Future.delayed(const Duration(seconds: 5), () async {
+                if (_sessionsInsertedCount > 0) {
+                  print(
+                    'NativeSync: Backup sync triggered ($_sessionsInsertedCount sessions still pending)',
+                  );
+                  try {
+                    final syncService = SyncService();
+                    await syncService.syncAll();
+                    _sessionsInsertedCount = 0;
+                  } catch (e) {
+                    print('NativeSync: Error in backup sync: $e');
+                  }
+                }
+              });
+            }
           } catch (e) {
             print('Error parsing session data: $e');
             // Remove invalid entry
