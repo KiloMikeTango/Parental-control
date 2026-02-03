@@ -1,5 +1,4 @@
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:connectivity_plus/connectivity_plus.dart';
 import '../models/usage_session.dart';
 import '../models/heartbeat_log.dart';
 import '../models/interruption.dart';
@@ -11,7 +10,6 @@ import 'dart:async';
 class NativeSyncService {
   final DatabaseService _database = DatabaseService();
   final TelegramService _telegram = TelegramService();
-  final Connectivity _connectivity = Connectivity();
   Timer? _syncTimer;
   Timer? _pendingSyncTimer;
   int _sessionsInsertedCount = 0;
@@ -50,18 +48,12 @@ class NativeSyncService {
     _pendingSyncTimer = null;
   }
 
-  Future<bool> _hasConnection() async {
-    final connectivityResult = await _connectivity.checkConnectivity();
-    if (connectivityResult.contains(ConnectivityResult.none)) {
-      return false;
-    }
-    return await _telegram.canReachTelegram();
-  }
-
   Future<void> syncUsageStarts() async {
     try {
       final prefs = await SharedPreferences.getInstance();
       final allKeys = prefs.getKeys();
+      final availability = await _telegram.checkAvailability();
+      final canSend = availability == TelegramAvailability.ok;
 
       final startKeys = allKeys
           .where(
@@ -93,13 +85,21 @@ class NativeSyncService {
         final timeStr = prefs.getString('${prefix}${eventId}_time');
 
         if (packageName != null && timeStr != null) {
+          final timeMs = int.tryParse(timeStr);
+          if (timeMs == null) {
+            await prefs.remove(key);
+            await prefs.remove('${prefix}${eventId}_name');
+            await prefs.remove('${prefix}${eventId}_time');
+            continue;
+          }
+          final startTime = DateTime.fromMillisecondsSinceEpoch(timeMs);
           var sent = false;
-          final hasConnection = await _hasConnection();
-          if (hasConnection) {
+          if (canSend) {
             try {
               sent = await _telegram.sendCurrentAppReport(
                 appName: appName ?? packageName,
                 packageName: packageName,
+                startTime: startTime,
               );
             } catch (e) {
               print('NativeSync: Error sending current app report: $e');
@@ -122,6 +122,8 @@ class NativeSyncService {
     try {
       final prefs = await SharedPreferences.getInstance();
       final allKeys = prefs.getKeys();
+      final availability = await _telegram.checkAvailability();
+      final canSend = availability == TelegramAvailability.ok;
       print('NativeSync: All SharedPreferences keys count: ${allKeys.length}');
 
       // Debug: Print first few keys to see what we have
@@ -181,26 +183,26 @@ class NativeSyncService {
         );
 
         if (packageName != null && appName != null && startTimeStr != null) {
+          if (endTimeStr == null) {
+            continue;
+          }
           try {
             final startTime = int.parse(startTimeStr);
-            final endTime = endTimeStr != null ? int.parse(endTimeStr) : null;
+            final endTime = int.parse(endTimeStr);
             final duration = durationStr != null
                 ? int.parse(durationStr)
-                : null;
+                : (endTime - startTime);
 
             final session = UsageSession(
               packageName: packageName,
               appName: appName,
               startTime: DateTime.fromMillisecondsSinceEpoch(startTime),
-              endTime: endTime != null
-                  ? DateTime.fromMillisecondsSinceEpoch(endTime)
-                  : null,
+              endTime: DateTime.fromMillisecondsSinceEpoch(endTime),
               durationMs: duration,
             );
 
             var sentNow = false;
-            final hasConnection = await _hasConnection();
-            if (hasConnection) {
+            if (canSend) {
               try {
                 sentNow = await _telegram.sendUsageReport(session);
               } catch (e) {
@@ -228,7 +230,7 @@ class NativeSyncService {
             if (durationStr != null)
               await prefs.remove('${prefix}${sessionId}_duration');
 
-            if (!sentNow) {
+            if (!sentNow && canSend) {
               _pendingSyncTimer?.cancel();
               _pendingSyncTimer = Timer(const Duration(seconds: 2), () async {
                 try {

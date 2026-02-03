@@ -4,32 +4,30 @@ import '../models/usage_session.dart';
 import '../models/interruption.dart';
 import 'secure_storage_service.dart';
 import 'package:intl/intl.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
+
+enum TelegramAvailability { ok, missingConfig, noNetwork, unreachable }
 
 class TelegramService {
   final Dio _dio = Dio();
   final SecureStorageService _secureStorage = SecureStorageService();
+  final Connectivity _connectivity = Connectivity();
 
   Future<bool> sendUsageReport(UsageSession session) async {
     try {
-      final token = await _secureStorage.getTelegramToken();
-      final chatId = await _secureStorage.getTelegramChatId();
-
-      print(
-        'TelegramService: Token present: ${token != null}, ChatId present: ${chatId != null}',
-      );
-
-      if (token == null || chatId == null) {
-        print(
-          'TelegramService: Missing token or chatId. Token: $token, ChatId: $chatId',
-        );
+      final config = await _getConfig();
+      if (config == null) {
         return false;
       }
 
-      final duration = _formatDuration(session.durationMs ?? 0);
-      final startTime = DateFormat('HH:mm').format(session.startTime);
+      final durationMs = _resolveDurationMs(session);
+      final duration = _formatDuration(durationMs);
+      final startTime = DateFormat(
+        'yyyy-MM-dd hh:mm a',
+      ).format(session.startTime);
       final endTime = session.endTime != null
-          ? DateFormat('HH:mm').format(session.endTime!)
-          : 'N/A';
+          ? DateFormat('yyyy-MM-dd hh:mm a').format(session.endTime!)
+          : DateFormat('yyyy-MM-dd hh:mm a').format(session.startTime);
 
       final message =
           '''
@@ -42,37 +40,39 @@ To: $endTime
 Duration: $duration
 ''';
 
-      final url = 'https://api.telegram.org/bot$token/sendMessage';
-
-      print('TelegramService: Sending to URL: $url');
-      print('TelegramService: Chat ID: $chatId');
-      print(
-        'TelegramService: Message preview: ${message.substring(0, message.length > 50 ? 50 : message.length)}...',
-      );
-
+      final url = 'https://api.telegram.org/bot${config.token}/sendMessage';
       final response = await _dio.post(
         url,
-        data: {'chat_id': chatId, 'text': message},
+        data: {'chat_id': config.chatId, 'text': message},
         options: Options(
           sendTimeout: const Duration(seconds: 10),
           receiveTimeout: const Duration(seconds: 10),
         ),
       );
 
-      print('TelegramService: Response status: ${response.statusCode}');
-      print('TelegramService: Response data: ${response.data}');
-      final success = response.statusCode == 200;
-      print('TelegramService: Send success: $success');
-      return success;
+      return response.statusCode == 200;
     } catch (e) {
-      print('TelegramService: Error sending usage report: $e');
-      if (e is DioException) {
-        print(
-          'TelegramService: DioException - ${e.response?.statusCode}, ${e.response?.data}',
-        );
-      }
       return false;
     }
+  }
+
+  Future<TelegramAvailability> checkAvailability() async {
+    final config = await _getConfig();
+    if (config == null) {
+      return TelegramAvailability.missingConfig;
+    }
+
+    final connectivityResult = await _connectivity.checkConnectivity();
+    if (connectivityResult.contains(ConnectivityResult.none)) {
+      return TelegramAvailability.noNetwork;
+    }
+
+    final reachable = await canReachTelegram();
+    if (!reachable) {
+      return TelegramAvailability.unreachable;
+    }
+
+    return TelegramAvailability.ok;
   }
 
   Future<bool> canReachTelegram() async {
@@ -92,23 +92,23 @@ Duration: $duration
   Future<bool> sendCurrentAppReport({
     required String appName,
     required String packageName,
+    required DateTime startTime,
   }) async {
     try {
-      final token = await _secureStorage.getTelegramToken();
-      final chatId = await _secureStorage.getTelegramChatId();
-
-      if (token == null || chatId == null) {
+      final config = await _getConfig();
+      if (config == null) {
         return false;
       }
 
       final displayName = appName.isNotEmpty ? appName : packageName;
-      final message = 'App: $displayName';
+      final timestamp = DateFormat('yyyy-MM-dd hh:mm a').format(startTime);
+      final message = 'App: $displayName\nAt : $timestamp';
 
-      final url = 'https://api.telegram.org/bot$token/sendMessage';
+      final url = 'https://api.telegram.org/bot${config.token}/sendMessage';
 
       final response = await _dio.post(
         url,
-        data: {'chat_id': chatId, 'text': message},
+        data: {'chat_id': config.chatId, 'text': message},
         options: Options(
           sendTimeout: const Duration(seconds: 10),
           receiveTimeout: const Duration(seconds: 10),
@@ -117,28 +117,24 @@ Duration: $duration
 
       return response.statusCode == 200;
     } catch (e) {
-      print('TelegramService: Error sending current app report: $e');
-      if (e is DioException) {
-        print(
-          'TelegramService: DioException - ${e.response?.statusCode}, ${e.response?.data}',
-        );
-      }
       return false;
     }
   }
 
   Future<bool> sendInterruptionReport(Interruption interruption) async {
     try {
-      final token = await _secureStorage.getTelegramToken();
-      final chatId = await _secureStorage.getTelegramChatId();
-
-      if (token == null || chatId == null) {
+      final config = await _getConfig();
+      if (config == null) {
         return false;
       }
 
       final duration = _formatDuration(interruption.durationMs);
-      final fromTime = DateFormat('HH:mm').format(interruption.fromTime);
-      final toTime = DateFormat('HH:mm').format(interruption.toTime);
+      final fromTime = DateFormat(
+        'yyyy-MM-dd hh:mm a',
+      ).format(interruption.fromTime);
+      final toTime = DateFormat(
+        'yyyy-MM-dd hh:mm a',
+      ).format(interruption.toTime);
 
       final message =
           '''
@@ -149,11 +145,11 @@ To: $toTime
 Duration: $duration
 ''';
 
-      final url = 'https://api.telegram.org/bot$token/sendMessage';
+      final url = 'https://api.telegram.org/bot${config.token}/sendMessage';
 
       await _dio.post(
         url,
-        data: {'chat_id': chatId, 'text': message, 'parse_mode': 'HTML'},
+        data: {'chat_id': config.chatId, 'text': message, 'parse_mode': 'HTML'},
         options: Options(
           sendTimeout: const Duration(seconds: 10),
           receiveTimeout: const Duration(seconds: 10),
@@ -162,28 +158,18 @@ Duration: $duration
 
       return true;
     } catch (e) {
-      print('Error sending interruption report: $e');
       return false;
     }
   }
 
   Future<bool> testConnection() async {
     try {
-      final token = await _secureStorage.getTelegramToken();
-      final chatId = await _secureStorage.getTelegramChatId();
-
-      print(
-        'TelegramService: Test connection - Token: ${token != null ? "present" : "missing"}, ChatId: ${chatId != null ? "present" : "missing"}',
-      );
-
-      if (token == null || chatId == null) {
-        print('TelegramService: Test failed - missing credentials');
+      final config = await _getConfig();
+      if (config == null) {
         return false;
       }
 
-      final url = 'https://api.telegram.org/bot$token/getMe';
-      print('TelegramService: Testing connection to Telegram API...');
-
+      final url = 'https://api.telegram.org/bot${config.token}/getMe';
       final response = await _dio.get(
         url,
         options: Options(
@@ -192,17 +178,32 @@ Duration: $duration
         ),
       );
 
-      print('TelegramService: Test response status: ${response.statusCode}');
       return response.statusCode == 200;
     } catch (e) {
-      print('TelegramService: Test connection error: $e');
-      if (e is DioException) {
-        print(
-          'TelegramService: DioException - ${e.response?.statusCode}, ${e.response?.data}',
-        );
-      }
       return false;
     }
+  }
+
+  Future<_TelegramConfig?> _getConfig() async {
+    final token = await _secureStorage.getTelegramToken();
+    final chatId = await _secureStorage.getTelegramChatId();
+    if (token == null || chatId == null) {
+      return null;
+    }
+    return _TelegramConfig(token: token, chatId: chatId);
+  }
+
+  int _resolveDurationMs(UsageSession session) {
+    if (session.durationMs != null) {
+      return session.durationMs!;
+    }
+    if (session.endTime != null) {
+      final diff =
+          session.endTime!.millisecondsSinceEpoch -
+          session.startTime.millisecondsSinceEpoch;
+      return diff >= 0 ? diff : 0;
+    }
+    return 0;
   }
 
   String _formatDuration(int milliseconds) {
@@ -219,4 +220,11 @@ Duration: $duration
       return '${seconds}s';
     }
   }
+}
+
+class _TelegramConfig {
+  final String token;
+  final String chatId;
+
+  _TelegramConfig({required this.token, required this.chatId});
 }

@@ -30,8 +30,8 @@ class TrackingService : Service() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val handler = Handler(Looper.getMainLooper())
     
-    private var lastForegroundPackage: String? = null
-    private var lastForegroundTime: Long = 0
+    private var lastProcessedEventTime: Long = 0
+    private var activeSession: ActiveSession? = null
     private var heartbeatRunnable: Runnable? = null
     private var cachedHomePackages: Set<String>? = null
     private var cachedHomePackagesTime: Long = 0
@@ -104,6 +104,9 @@ class TrackingService : Service() {
 
     private fun stopForegroundTracking() {
         isRunning = false
+        if (activeSession != null) {
+            endSession(System.currentTimeMillis())
+        }
         handler.removeCallbacksAndMessages(null)
         heartbeatRunnable?.let { handler.removeCallbacks(it) }
         stopForeground(true)
@@ -141,42 +144,33 @@ class TrackingService : Service() {
                 val time = System.currentTimeMillis()
                 val events = usageStatsManager.queryEvents(time - 10000, time)
                 
-                var currentPackage: String? = null
-                var eventTime: Long = 0
-                
                 while (events.hasNextEvent()) {
                     val event = UsageEvents.Event()
                     events.getNextEvent(event)
-                    
+                    if (event.timeStamp <= lastProcessedEventTime) {
+                        continue
+                    }
+                    lastProcessedEventTime = event.timeStamp
+
                     when (event.eventType) {
                         UsageEvents.Event.MOVE_TO_FOREGROUND -> {
-                            currentPackage = event.packageName
-                            eventTime = event.timeStamp
+                            startSession(event.packageName, event.timeStamp)
                         }
                         UsageEvents.Event.MOVE_TO_BACKGROUND -> {
-                            if (currentPackage != null) {
-                                // App moved to background, end session
-                                handleAppSessionEnd(currentPackage, eventTime, event.timeStamp)
-                                currentPackage = null
+                            if (activeSession?.packageName == event.packageName) {
+                                endSession(event.timeStamp)
                             }
                         }
                     }
                 }
-                
-                if (currentPackage != null) {
-                    val shouldTrack = isTrackablePackage(currentPackage!!)
-                    if (shouldTrack && currentPackage != lastForegroundPackage) {
-                        if (lastForegroundPackage != null && lastForegroundTime > 0) {
-                            handleAppSessionEnd(lastForegroundPackage!!, lastForegroundTime, eventTime)
-                        }
-                        if (eventTime > 0) {
-                            handleAppSessionStart(currentPackage, eventTime)
-                        }
-                        lastForegroundPackage = currentPackage
-                        lastForegroundTime = eventTime
-                    } else if (!shouldTrack) {
-                        lastForegroundPackage = null
-                        lastForegroundTime = 0
+
+                val topApp = resolveTopApp(usageStatsManager, time)
+                if (topApp != null) {
+                    if (activeSession == null) {
+                        startSession(topApp.packageName, topApp.lastTimeUsed)
+                    } else if (activeSession?.packageName != topApp.packageName) {
+                        endSession(time)
+                        startSession(topApp.packageName, topApp.lastTimeUsed)
                     }
                 }
             } catch (e: Exception) {
@@ -185,16 +179,70 @@ class TrackingService : Service() {
         }
     }
 
+    private fun resolveTopApp(
+        usageStatsManager: UsageStatsManager,
+        now: Long
+    ): TopApp? {
+        val stats = usageStatsManager.queryUsageStats(
+            UsageStatsManager.INTERVAL_DAILY,
+            now - 60000,
+            now
+        )
+        if (stats.isNullOrEmpty()) return null
+        val recent = stats
+            .filter { it.lastTimeUsed > 0 }
+            .maxByOrNull { it.lastTimeUsed }
+            ?: return null
+        if (recent.lastTimeUsed < now - 60000) return null
+        return TopApp(recent.packageName, recent.lastTimeUsed)
+    }
+
+    private data class TopApp(val packageName: String, val lastTimeUsed: Long)
+
+    private data class ActiveSession(
+        val packageName: String,
+        val startTime: Long
+    )
+
+    private fun startSession(packageName: String, startTime: Long) {
+        if (!isTrackablePackage(packageName)) {
+            if (activeSession != null) {
+                endSession(startTime)
+            }
+            activeSession = null
+            return
+        }
+        if (activeSession?.packageName == packageName) {
+            return
+        }
+        if (activeSession != null) {
+            endSession(startTime)
+        }
+        activeSession = ActiveSession(packageName, startTime)
+        handleAppSessionStart(packageName, startTime)
+    }
+
+    private fun endSession(endTime: Long) {
+        val session = activeSession ?: return
+        val normalizedEndTime = if (endTime >= session.startTime) endTime else session.startTime
+        handleAppSessionEnd(session.packageName, session.startTime, normalizedEndTime)
+        activeSession = null
+    }
+
     private fun handleAppSessionEnd(packageName: String, startTime: Long, endTime: Long) {
         serviceScope.launch {
             try {
                 val packageManager = packageManager
                 val appName = resolveTrackableAppName(packageName) ?: return@launch
                 
-                val duration = endTime - startTime
+                val normalizedEndTime = if (endTime >= startTime) endTime else startTime
+                val duration = normalizedEndTime - startTime
+                if (duration < 1000) {
+                    return@launch
+                }
 
                 val sent = sendTelegramMessage(
-                    buildUsageMessage(appName, packageName, startTime, endTime, duration)
+                    buildUsageMessage(appName, packageName, startTime, normalizedEndTime, duration)
                 )
                 if (!sent) {
                     val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
@@ -203,7 +251,7 @@ class TrackingService : Service() {
                     editor.putString("flutter.${sessionKey}_package", packageName)
                     editor.putString("flutter.${sessionKey}_name", appName)
                     editor.putString("flutter.${sessionKey}_start", startTime.toString())
-                    editor.putString("flutter.${sessionKey}_end", endTime.toString())
+                    editor.putString("flutter.${sessionKey}_end", normalizedEndTime.toString())
                     editor.putString("flutter.${sessionKey}_duration", duration.toString())
                     editor.commit()
                     android.util.Log.d("TrackingService", "Stored session in SharedPreferences: flutter.$sessionKey")

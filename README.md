@@ -136,22 +136,22 @@ The app sends two types of reports:
 
 ### App Usage Report
 ```
- App Usage
+📱 App Usage
 
 App: YouTube
 Package: com.google.android.youtube
-From: 13:00
-To: 15:24
+From: 2026-02-04 12:26 AM
+To: 2026-02-04 12:27 AM
 Duration: 2h 24m
 ```
 
 ### Interruption Report
 ```
- Monitoring Interruption
+⚠️ Monitoring Interruption
 
-From: 16:10
-To: 17:02
-Duration: 52 min
+From: 2026-02-04 12:10 AM
+To: 2026-02-04 12:17 AM
+Duration: 7m 0s
 ```
 
 ## Security Features

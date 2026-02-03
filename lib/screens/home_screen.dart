@@ -136,11 +136,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final duration = Duration(milliseconds: milliseconds);
     final hours = duration.inHours;
     final minutes = duration.inMinutes.remainder(60);
+    final seconds = duration.inSeconds.remainder(60);
 
     if (hours > 0) {
       return '${hours}h ${minutes}m';
+    } else if (minutes > 0) {
+      return '${minutes}m ${seconds}s';
     } else {
-      return '${minutes}m';
+      return '${seconds}s';
     }
   }
 }
