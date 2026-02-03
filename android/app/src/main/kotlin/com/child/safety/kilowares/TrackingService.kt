@@ -9,6 +9,7 @@ import android.app.usage.UsageEvents
 import android.app.usage.UsageStatsManager
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ApplicationInfo
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
@@ -32,6 +33,10 @@ class TrackingService : Service() {
     private var lastForegroundPackage: String? = null
     private var lastForegroundTime: Long = 0
     private var heartbeatRunnable: Runnable? = null
+    private var cachedHomePackages: Set<String>? = null
+    private var cachedHomePackagesTime: Long = 0
+    private var cachedLaunchablePackages: Set<String>? = null
+    private var cachedLaunchablePackagesTime: Long = 0
     
     companion object {
         const val ACTION_START = "com.child.safety.kilowares.START_TRACKING"
@@ -158,18 +163,21 @@ class TrackingService : Service() {
                     }
                 }
                 
-                // Check if we have a current foreground app
-                if (currentPackage != null && currentPackage != lastForegroundPackage) {
-                    // New app in foreground
-                    if (lastForegroundPackage != null && lastForegroundTime > 0) {
-                        // End previous session
-                        handleAppSessionEnd(lastForegroundPackage!!, lastForegroundTime, eventTime)
+                if (currentPackage != null) {
+                    val shouldTrack = isTrackablePackage(currentPackage!!)
+                    if (shouldTrack && currentPackage != lastForegroundPackage) {
+                        if (lastForegroundPackage != null && lastForegroundTime > 0) {
+                            handleAppSessionEnd(lastForegroundPackage!!, lastForegroundTime, eventTime)
+                        }
+                        if (eventTime > 0) {
+                            handleAppSessionStart(currentPackage, eventTime)
+                        }
+                        lastForegroundPackage = currentPackage
+                        lastForegroundTime = eventTime
+                    } else if (!shouldTrack) {
+                        lastForegroundPackage = null
+                        lastForegroundTime = 0
                     }
-                    if (eventTime > 0) {
-                        handleAppSessionStart(currentPackage, eventTime)
-                    }
-                    lastForegroundPackage = currentPackage
-                    lastForegroundTime = eventTime
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
@@ -181,18 +189,7 @@ class TrackingService : Service() {
         serviceScope.launch {
             try {
                 val packageManager = packageManager
-                var appName = packageName // Fallback to package name
-                
-                try {
-                    val appInfo = packageManager.getApplicationInfo(packageName, 0)
-                    appName = packageManager.getApplicationLabel(appInfo).toString()
-                } catch (e: android.content.pm.PackageManager.NameNotFoundException) {
-                    // Package not found or inaccessible - use package name as fallback
-                    android.util.Log.w("TrackingService", "Could not get app name for $packageName, using package name")
-                } catch (e: Exception) {
-                    // Other errors - use package name as fallback
-                    android.util.Log.w("TrackingService", "Error getting app name for $packageName: ${e.message}")
-                }
+                val appName = resolveTrackableAppName(packageName) ?: return@launch
                 
                 val duration = endTime - startTime
 
@@ -224,19 +221,10 @@ class TrackingService : Service() {
         serviceScope.launch {
             try {
                 val packageManager = packageManager
-                var appName = packageName
-
-                try {
-                    val appInfo = packageManager.getApplicationInfo(packageName, 0)
-                    appName = packageManager.getApplicationLabel(appInfo).toString()
-                } catch (e: android.content.pm.PackageManager.NameNotFoundException) {
-                    android.util.Log.w("TrackingService", "Could not get app name for $packageName, using package name")
-                } catch (e: Exception) {
-                    android.util.Log.w("TrackingService", "Error getting app name for $packageName: ${e.message}")
-                }
+                val appName = resolveTrackableAppName(packageName) ?: return@launch
 
                 val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
-                val sent = sendTelegramMessage("App: $appName")
+                val sent = sendTelegramMessage("App: $appName\nAt : ${formatDateTime(startTime)}")
                 if (!sent) {
                     val eventKey = "enter_${System.currentTimeMillis()}"
                     val editor = prefs.edit()
@@ -287,11 +275,15 @@ class TrackingService : Service() {
         endTime: Long,
         durationMs: Long
     ): String {
-        val formatter = SimpleDateFormat("HH:mm", Locale.getDefault())
-        val from = formatter.format(Date(startTime))
-        val to = formatter.format(Date(endTime))
+        val from = formatDateTime(startTime)
+        val to = formatDateTime(endTime)
         val duration = formatDuration(durationMs)
         return "📱 App Usage\n\nApp: $appName\nPackage: $packageName\nFrom: $from\nTo: $to\nDuration: $duration"
+    }
+
+    private fun formatDateTime(timestamp: Long): String {
+        val formatter = SimpleDateFormat("yyyy-MM-dd hh:mm a", Locale.getDefault())
+        return formatter.format(Date(timestamp))
     }
 
     private fun formatDuration(durationMs: Long): String {
@@ -316,6 +308,74 @@ class TrackingService : Service() {
     ) {
         // This will be handled by EventChannel in MainActivity
         // For now, we store in SharedPreferences and Flutter polls
+    }
+
+    private fun isSystemApp(appInfo: ApplicationInfo): Boolean {
+        val flags = appInfo.flags
+        return (flags and ApplicationInfo.FLAG_SYSTEM) != 0 ||
+            (flags and ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0
+    }
+
+    private fun isTrackablePackage(packageName: String): Boolean {
+        if (isHomePackage(packageName)) return false
+        val launchablePackages = getLaunchablePackages()
+        if (launchablePackages != null) {
+            return launchablePackages.contains(packageName)
+        }
+        return packageManager.getLaunchIntentForPackage(packageName) != null
+    }
+
+    private fun resolveTrackableAppName(packageName: String): String? {
+        if (!isTrackablePackage(packageName)) return null
+        return try {
+            val appInfo = packageManager.getApplicationInfo(packageName, 0)
+            packageManager.getApplicationLabel(appInfo).toString()
+        } catch (e: android.content.pm.PackageManager.NameNotFoundException) {
+            packageName
+        } catch (e: Exception) {
+            packageName
+        }
+    }
+
+    private fun isHomePackage(packageName: String): Boolean {
+        return getHomePackages().contains(packageName)
+    }
+
+    private fun getHomePackages(): Set<String> {
+        val now = System.currentTimeMillis()
+        val cached = cachedHomePackages
+        if (cached != null && now - cachedHomePackagesTime < 60 * 60 * 1000) {
+            return cached
+        }
+        val intent = Intent(Intent.ACTION_MAIN).apply {
+            addCategory(Intent.CATEGORY_HOME)
+        }
+        val resolveInfos = packageManager.queryIntentActivities(intent, 0)
+        val packages = resolveInfos.mapNotNull { it.activityInfo?.packageName }.toSet()
+        cachedHomePackages = packages
+        cachedHomePackagesTime = now
+        return packages
+    }
+
+    private fun getLaunchablePackages(): Set<String>? {
+        val now = System.currentTimeMillis()
+        val cached = cachedLaunchablePackages
+        if (cached != null && now - cachedLaunchablePackagesTime < 60 * 60 * 1000) {
+            return cached
+        }
+        cachedLaunchablePackagesTime = now
+        return try {
+            val intent = Intent(Intent.ACTION_MAIN).apply {
+                addCategory(Intent.CATEGORY_LAUNCHER)
+            }
+            val resolveInfos = packageManager.queryIntentActivities(intent, 0)
+            val packages = resolveInfos.mapNotNull { it.activityInfo?.packageName }.toSet()
+            cachedLaunchablePackages = packages
+            packages
+        } catch (e: Exception) {
+            cachedLaunchablePackages = null
+            null
+        }
     }
 
     private fun startHeartbeat() {

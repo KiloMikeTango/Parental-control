@@ -5,7 +5,9 @@ import '../services/sync_service.dart';
 import 'dart:async';
 
 class TrackingService {
-  static const MethodChannel _channel = MethodChannel('com.child.safety.kilowares/tracking');
+  static const MethodChannel _channel = MethodChannel(
+    'com.child.safety.kilowares/tracking',
+  );
   final NativeSyncService _nativeSync = NativeSyncService();
 
   // Start the foreground tracking service
@@ -13,12 +15,12 @@ class TrackingService {
     try {
       // Schedule WorkManager sync first
       await _channel.invokeMethod('scheduleSync');
-      
+
       final result = await _channel.invokeMethod<bool>('startTracking');
       if (result == true) {
         // Start polling for native data
         _nativeSync.startPolling();
-        
+
         // Also trigger immediate sync after a short delay
         Future.delayed(const Duration(seconds: 3), () async {
           final syncService = SyncService();
@@ -77,7 +79,9 @@ class TrackingService {
   // Request battery optimization exemption
   Future<bool> requestBatteryOptimizationExemption() async {
     try {
-      final result = await _channel.invokeMethod<bool>('requestBatteryOptimizationExemption');
+      final result = await _channel.invokeMethod<bool>(
+        'requestBatteryOptimizationExemption',
+      );
       return result ?? false;
     } catch (e) {
       return false;
@@ -87,7 +91,9 @@ class TrackingService {
   // Check if battery optimization exemption is granted
   Future<bool> isBatteryOptimizationExempt() async {
     try {
-      final result = await _channel.invokeMethod<bool>('isBatteryOptimizationExempt');
+      final result = await _channel.invokeMethod<bool>(
+        'isBatteryOptimizationExempt',
+      );
       return result ?? false;
     } catch (e) {
       return false;
@@ -118,22 +124,23 @@ class TrackingService {
   StreamSubscription? _usageStreamSubscription;
 
   void startListeningToUsageEvents(Function(UsageSession) onSessionComplete) {
-    _usageStreamSubscription = EventChannel('com.child.safety.kilowares/usageEvents')
-        .receiveBroadcastStream()
-        .listen((dynamic event) {
-      if (event is Map) {
-        final session = UsageSession(
-          packageName: event['packageName'] as String,
-          appName: event['appName'] as String,
-          startTime: DateTime.parse(event['startTime'] as String),
-          endTime: event['endTime'] != null
-              ? DateTime.parse(event['endTime'] as String)
-              : null,
-          durationMs: event['durationMs'] as int?,
-        );
-        onSessionComplete(session);
-      }
-    });
+    _usageStreamSubscription =
+        EventChannel(
+          'com.child.safety.kilowares/usageEvents',
+        ).receiveBroadcastStream().listen((dynamic event) {
+          if (event is Map) {
+            final session = UsageSession(
+              packageName: event['packageName'] as String,
+              appName: event['appName'] as String,
+              startTime: DateTime.parse(event['startTime'] as String),
+              endTime: event['endTime'] != null
+                  ? DateTime.parse(event['endTime'] as String)
+                  : null,
+              durationMs: event['durationMs'] as int?,
+            );
+            onSessionComplete(session);
+          }
+        });
   }
 
   void stopListeningToUsageEvents() {
