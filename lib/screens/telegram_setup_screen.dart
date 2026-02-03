@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../providers/app_state_provider.dart';
 import '../services/telegram_service.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class TelegramSetupScreen extends ConsumerStatefulWidget {
   const TelegramSetupScreen({super.key});
@@ -28,7 +29,7 @@ class _TelegramSetupScreenState extends ConsumerState<TelegramSetupScreen> {
     final storage = ref.read(secureStorageProvider);
     final token = await storage.getTelegramToken();
     final chatId = await storage.getTelegramChatId();
-    
+
     if (mounted) {
       setState(() {
         if (token != null) _tokenController.text = token;
@@ -59,16 +60,23 @@ class _TelegramSetupScreenState extends ConsumerState<TelegramSetupScreen> {
     final storage = ref.read(secureStorageProvider);
     final token = _tokenController.text.trim();
     final chatId = _chatIdController.text.trim();
-    
-    print('TelegramSetup: Storing token: ${token.isNotEmpty}, chatId: ${chatId.isNotEmpty}');
-    
+
+    print(
+      'TelegramSetup: Storing token: ${token.isNotEmpty}, chatId: ${chatId.isNotEmpty}',
+    );
+
     await storage.setTelegramToken(token);
     await storage.setTelegramChatId(chatId);
-    
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('telegram_token', token);
+    await prefs.setString('telegram_chat_id', chatId);
+
     // Verify storage
     final storedToken = await storage.getTelegramToken();
     final storedChatId = await storage.getTelegramChatId();
-    print('TelegramSetup: Stored token: ${storedToken != null}, stored chatId: ${storedChatId != null}');
+    print(
+      'TelegramSetup: Stored token: ${storedToken != null}, stored chatId: ${storedChatId != null}',
+    );
 
     final telegram = TelegramService();
     final success = await telegram.testConnection();

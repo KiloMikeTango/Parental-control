@@ -18,8 +18,12 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.*
+import java.net.HttpURLConnection
+import java.net.URL
+import java.net.URLEncoder
 
 class TrackingService : Service() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -191,20 +195,23 @@ class TrackingService : Service() {
                 }
                 
                 val duration = endTime - startTime
-                
-                // Store in default SharedPreferences for Flutter to sync
-                // Use default SharedPreferences so Flutter can access it
-                val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
-                val sessionKey = "session_${System.currentTimeMillis()}"
-                val editor = prefs.edit()
-                editor.putString("flutter.${sessionKey}_package", packageName)
-                editor.putString("flutter.${sessionKey}_name", appName)
-                editor.putString("flutter.${sessionKey}_start", startTime.toString())
-                editor.putString("flutter.${sessionKey}_end", endTime.toString())
-                editor.putString("flutter.${sessionKey}_duration", duration.toString())
-                editor.commit() // Use commit() for immediate write
-                android.util.Log.d("TrackingService", "Stored session in SharedPreferences: flutter.$sessionKey")
-                
+
+                val sent = sendTelegramMessage(
+                    buildUsageMessage(appName, packageName, startTime, endTime, duration)
+                )
+                if (!sent) {
+                    val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+                    val sessionKey = "session_${System.currentTimeMillis()}"
+                    val editor = prefs.edit()
+                    editor.putString("flutter.${sessionKey}_package", packageName)
+                    editor.putString("flutter.${sessionKey}_name", appName)
+                    editor.putString("flutter.${sessionKey}_start", startTime.toString())
+                    editor.putString("flutter.${sessionKey}_end", endTime.toString())
+                    editor.putString("flutter.${sessionKey}_duration", duration.toString())
+                    editor.commit()
+                    android.util.Log.d("TrackingService", "Stored session in SharedPreferences: flutter.$sessionKey")
+                }
+
                 android.util.Log.d("TrackingService", "Saved session: $appName ($packageName) - ${duration}ms")
             } catch (e: Exception) {
                 android.util.Log.e("TrackingService", "Error handling app session end", e)
@@ -229,17 +236,74 @@ class TrackingService : Service() {
                 }
 
                 val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
-                val eventKey = "enter_${System.currentTimeMillis()}"
-                val editor = prefs.edit()
-                editor.putString("flutter.${eventKey}_package", packageName)
-                editor.putString("flutter.${eventKey}_name", appName)
-                editor.putString("flutter.${eventKey}_time", startTime.toString())
-                editor.commit()
-                android.util.Log.d("TrackingService", "Stored enter event in SharedPreferences: flutter.$eventKey")
+                val sent = sendTelegramMessage("App: $appName")
+                if (!sent) {
+                    val eventKey = "enter_${System.currentTimeMillis()}"
+                    val editor = prefs.edit()
+                    editor.putString("flutter.${eventKey}_package", packageName)
+                    editor.putString("flutter.${eventKey}_name", appName)
+                    editor.putString("flutter.${eventKey}_time", startTime.toString())
+                    editor.commit()
+                    android.util.Log.d("TrackingService", "Stored enter event in SharedPreferences: flutter.$eventKey")
+                }
             } catch (e: Exception) {
                 android.util.Log.e("TrackingService", "Error handling app session start", e)
                 e.printStackTrace()
             }
+        }
+    }
+
+    private suspend fun sendTelegramMessage(message: String): Boolean {
+        return withContext(Dispatchers.IO) {
+            try {
+                val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+                val token = prefs.getString("flutter.telegram_token", null)
+                val chatId = prefs.getString("flutter.telegram_chat_id", null)
+                if (token.isNullOrBlank() || chatId.isNullOrBlank()) return@withContext false
+
+                val url = URL("https://api.telegram.org/bot$token/sendMessage")
+                val connection = (url.openConnection() as HttpURLConnection).apply {
+                    requestMethod = "POST"
+                    doOutput = true
+                    connectTimeout = 5000
+                    readTimeout = 5000
+                }
+                val data =
+                    "chat_id=${URLEncoder.encode(chatId, "UTF-8")}&text=${URLEncoder.encode(message, "UTF-8")}"
+                connection.outputStream.use { it.write(data.toByteArray(Charsets.UTF_8)) }
+                val responseCode = connection.responseCode
+                connection.disconnect()
+                responseCode == 200
+            } catch (e: Exception) {
+                false
+            }
+        }
+    }
+
+    private fun buildUsageMessage(
+        appName: String,
+        packageName: String,
+        startTime: Long,
+        endTime: Long,
+        durationMs: Long
+    ): String {
+        val formatter = SimpleDateFormat("HH:mm", Locale.getDefault())
+        val from = formatter.format(Date(startTime))
+        val to = formatter.format(Date(endTime))
+        val duration = formatDuration(durationMs)
+        return "📱 App Usage\n\nApp: $appName\nPackage: $packageName\nFrom: $from\nTo: $to\nDuration: $duration"
+    }
+
+    private fun formatDuration(durationMs: Long): String {
+        val seconds = durationMs / 1000
+        val minutes = seconds / 60
+        val hours = minutes / 60
+        val remainingMinutes = minutes % 60
+        val remainingSeconds = seconds % 60
+        return when {
+            hours > 0 -> "${hours}h ${remainingMinutes}m"
+            minutes > 0 -> "${minutes}m ${remainingSeconds}s"
+            else -> "${remainingSeconds}s"
         }
     }
 
