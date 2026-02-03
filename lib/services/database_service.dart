@@ -80,6 +80,7 @@ class DatabaseService {
       orderBy: 'start_time ASC',
       limit: limit,
     );
+    print('DatabaseService: Found ${maps.length} unsent sessions in database');
     return List.generate(maps.length, (i) => UsageSession.fromMap(maps[i]));
   }
 

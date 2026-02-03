@@ -1,6 +1,7 @@
 import 'package:flutter/services.dart';
 import '../models/usage_session.dart';
 import '../services/native_sync_service.dart';
+import '../services/sync_service.dart';
 import 'dart:async';
 
 class TrackingService {
@@ -17,6 +18,12 @@ class TrackingService {
       if (result == true) {
         // Start polling for native data
         _nativeSync.startPolling();
+        
+        // Also trigger immediate sync after a short delay
+        Future.delayed(const Duration(seconds: 3), () async {
+          final syncService = SyncService();
+          await syncService.syncAll();
+        });
       }
       return result ?? false;
     } catch (e) {
@@ -71,6 +78,16 @@ class TrackingService {
   Future<bool> requestBatteryOptimizationExemption() async {
     try {
       final result = await _channel.invokeMethod<bool>('requestBatteryOptimizationExemption');
+      return result ?? false;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  // Check if battery optimization exemption is granted
+  Future<bool> isBatteryOptimizationExempt() async {
+    try {
+      final result = await _channel.invokeMethod<bool>('isBatteryOptimizationExempt');
       return result ?? false;
     } catch (e) {
       return false;

@@ -34,7 +34,18 @@ class SyncWorker(context: Context, params: WorkerParameters) : Worker(context, p
 
     private fun checkForInterruptions() {
         val prefs = applicationContext.getSharedPreferences("heartbeats", Context.MODE_PRIVATE)
-        val lastHeartbeat = prefs.getLong("last_heartbeat", 0)
+        // Get heartbeat as string (we store it as string now)
+        val lastHeartbeatStr = prefs.getString("last_heartbeat", null)
+        
+        val lastHeartbeat = if (lastHeartbeatStr != null) {
+            try {
+                lastHeartbeatStr.toLong()
+            } catch (e: Exception) {
+                0L
+            }
+        } else {
+            0L
+        }
         
         if (lastHeartbeat > 0) {
             val now = System.currentTimeMillis()
@@ -46,11 +57,12 @@ class SyncWorker(context: Context, params: WorkerParameters) : Worker(context, p
                 val interruptionPrefs = applicationContext.getSharedPreferences("interruptions", Context.MODE_PRIVATE)
                 val interruptionKey = "interruption_${System.currentTimeMillis()}"
                 interruptionPrefs.edit().apply {
-                    putLong("${interruptionKey}_from", lastHeartbeat)
-                    putLong("${interruptionKey}_to", now)
-                    putLong("${interruptionKey}_duration", gap)
+                    putString("${interruptionKey}_from", lastHeartbeat.toString())
+                    putString("${interruptionKey}_to", now.toString())
+                    putString("${interruptionKey}_duration", gap.toString())
                     apply()
                 }
+                android.util.Log.w("SyncWorker", "Interruption detected: ${gap / 1000 / 60} minutes")
             }
         }
     }

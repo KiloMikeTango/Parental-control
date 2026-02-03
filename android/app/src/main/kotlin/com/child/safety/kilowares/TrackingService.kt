@@ -189,17 +189,18 @@ class TrackingService : Service() {
                 
                 val duration = endTime - startTime
                 
-                // Store in SharedPreferences for Flutter to sync
-                val prefs = getSharedPreferences("usage_sessions", Context.MODE_PRIVATE)
+                // Store in default SharedPreferences for Flutter to sync
+                // Use default SharedPreferences so Flutter can access it
+                val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
                 val sessionKey = "session_${System.currentTimeMillis()}"
-                prefs.edit().apply {
-                    putString("${sessionKey}_package", packageName)
-                    putString("${sessionKey}_name", appName)
-                    putString("${sessionKey}_start", startTime.toString()) // Store as string to avoid type issues
-                    putString("${sessionKey}_end", endTime.toString())
-                    putString("${sessionKey}_duration", duration.toString())
-                    apply()
-                }
+                val editor = prefs.edit()
+                editor.putString("flutter.${sessionKey}_package", packageName)
+                editor.putString("flutter.${sessionKey}_name", appName)
+                editor.putString("flutter.${sessionKey}_start", startTime.toString())
+                editor.putString("flutter.${sessionKey}_end", endTime.toString())
+                editor.putString("flutter.${sessionKey}_duration", duration.toString())
+                editor.commit() // Use commit() for immediate write
+                android.util.Log.d("TrackingService", "Stored session in SharedPreferences: flutter.$sessionKey")
                 
                 android.util.Log.d("TrackingService", "Saved session: $appName ($packageName) - ${duration}ms")
             } catch (e: Exception) {
@@ -226,8 +227,10 @@ class TrackingService : Service() {
                 if (isRunning) {
                     // Log heartbeat
                     val prefs = getSharedPreferences("heartbeats", Context.MODE_PRIVATE)
-                    prefs.edit().putLong("last_heartbeat", System.currentTimeMillis()).apply()
+                    val currentTime = System.currentTimeMillis()
+                    prefs.edit().putString("last_heartbeat", currentTime.toString()).apply()
                     
+                    android.util.Log.d("TrackingService", "Heartbeat: $currentTime")
                     handler.postDelayed(this, 60000) // Every minute
                 }
             }

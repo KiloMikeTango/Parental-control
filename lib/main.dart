@@ -5,11 +5,7 @@ import 'screens/home_screen.dart';
 import 'providers/app_state_provider.dart';
 
 void main() {
-  runApp(
-    const ProviderScope(
-      child: MainApp(),
-    ),
-  );
+  runApp(const ProviderScope(child: MainApp()));
 }
 
 class MainApp extends ConsumerStatefulWidget {
@@ -28,7 +24,15 @@ class _MainAppState extends ConsumerState<MainApp> {
 
   Future<void> _initializeServices() async {
     // Sync will be triggered by WorkManager
-    // Initial sync can be done here if needed
+    // Also trigger initial sync after a delay to ensure services are ready
+    Future.delayed(const Duration(seconds: 5), () async {
+      try {
+        final syncService = ref.read(syncServiceProvider);
+        await syncService.syncAll();
+      } catch (e) {
+        print('Error in initial sync: $e');
+      }
+    });
   }
 
   @override
@@ -42,10 +46,10 @@ class _MainAppState extends ConsumerState<MainApp> {
         useMaterial3: true,
       ),
       home: setupComplete.when(
-        data: (complete) => complete ? const HomeScreen() : const OnboardingScreen(),
-        loading: () => const Scaffold(
-          body: Center(child: CircularProgressIndicator()),
-        ),
+        data: (complete) =>
+            complete ? const HomeScreen() : const OnboardingScreen(),
+        loading: () =>
+            const Scaffold(body: Center(child: CircularProgressIndicator())),
         error: (_, __) => const OnboardingScreen(),
       ),
       routes: {

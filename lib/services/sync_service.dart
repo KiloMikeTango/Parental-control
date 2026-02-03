@@ -8,22 +8,44 @@ class SyncService {
   final Connectivity _connectivity = Connectivity();
 
   Future<bool> syncAll() async {
+    print('SyncService: Starting sync...');
+    
     // Check connectivity
     final connectivityResult = await _connectivity.checkConnectivity();
     if (connectivityResult.contains(ConnectivityResult.none)) {
+      print('SyncService: No internet connection');
       return false;
     }
+
+    print('SyncService: Internet connection available');
 
     bool allSuccess = true;
 
     // Sync usage sessions
     final unsentSessions = await _database.getUnsentUsageSessions();
-    for (final session in unsentSessions) {
-      final success = await _telegram.sendUsageReport(session);
-      if (success && session.id != null) {
-        await _database.markUsageSessionSent(session.id!);
-      } else {
-        allSuccess = false;
+    print('SyncService: Found ${unsentSessions.length} unsent sessions');
+    
+    if (unsentSessions.isEmpty) {
+      print('SyncService: No unsent sessions to sync');
+    } else {
+      print('SyncService: Processing ${unsentSessions.length} sessions...');
+      for (final session in unsentSessions) {
+        print('SyncService: Sending session ID ${session.id} for ${session.appName} (${session.packageName})');
+        try {
+          final success = await _telegram.sendUsageReport(session);
+          print('SyncService: Send result for session ${session.id}: $success');
+          if (success && session.id != null) {
+            await _database.markUsageSessionSent(session.id!);
+            print('SyncService: Session ${session.id} marked as sent');
+          } else {
+            print('SyncService: Failed to send session ${session.id} - success: $success, id: ${session.id}');
+            allSuccess = false;
+          }
+        } catch (e, stackTrace) {
+          print('SyncService: Exception sending session ${session.id}: $e');
+          print('SyncService: Stack trace: $stackTrace');
+          allSuccess = false;
+        }
       }
     }
 

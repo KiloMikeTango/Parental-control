@@ -13,7 +13,10 @@ class TelegramService {
       final token = await _secureStorage.getTelegramToken();
       final chatId = await _secureStorage.getTelegramChatId();
 
+      print('TelegramService: Token present: ${token != null}, ChatId present: ${chatId != null}');
+      
       if (token == null || chatId == null) {
+        print('TelegramService: Missing token or chatId. Token: $token, ChatId: $chatId');
         return false;
       }
 
@@ -35,12 +38,15 @@ Duration: $duration
 
       final url = 'https://api.telegram.org/bot$token/sendMessage';
       
-      await _dio.post(
+      print('TelegramService: Sending to URL: $url');
+      print('TelegramService: Chat ID: $chatId');
+      print('TelegramService: Message preview: ${message.substring(0, message.length > 50 ? 50 : message.length)}...');
+      
+      final response = await _dio.post(
         url,
         data: {
           'chat_id': chatId,
           'text': message,
-          'parse_mode': 'HTML',
         },
         options: Options(
           sendTimeout: const Duration(seconds: 10),
@@ -48,9 +54,16 @@ Duration: $duration
         ),
       );
 
-      return true;
+      print('TelegramService: Response status: ${response.statusCode}');
+      print('TelegramService: Response data: ${response.data}');
+      final success = response.statusCode == 200;
+      print('TelegramService: Send success: $success');
+      return success;
     } catch (e) {
-      print('Error sending usage report: $e');
+      print('TelegramService: Error sending usage report: $e');
+      if (e is DioException) {
+        print('TelegramService: DioException - ${e.response?.statusCode}, ${e.response?.data}');
+      }
       return false;
     }
   }
@@ -103,11 +116,16 @@ Duration: $duration
       final token = await _secureStorage.getTelegramToken();
       final chatId = await _secureStorage.getTelegramChatId();
 
+      print('TelegramService: Test connection - Token: ${token != null ? "present" : "missing"}, ChatId: ${chatId != null ? "present" : "missing"}');
+
       if (token == null || chatId == null) {
+        print('TelegramService: Test failed - missing credentials');
         return false;
       }
 
       final url = 'https://api.telegram.org/bot$token/getMe';
+      print('TelegramService: Testing connection to Telegram API...');
+      
       final response = await _dio.get(
         url,
         options: Options(
@@ -116,8 +134,13 @@ Duration: $duration
         ),
       );
 
+      print('TelegramService: Test response status: ${response.statusCode}');
       return response.statusCode == 200;
     } catch (e) {
+      print('TelegramService: Test connection error: $e');
+      if (e is DioException) {
+        print('TelegramService: DioException - ${e.response?.statusCode}, ${e.response?.data}');
+      }
       return false;
     }
   }

@@ -11,7 +11,7 @@ class OnboardingScreen extends ConsumerStatefulWidget {
   ConsumerState<OnboardingScreen> createState() => _OnboardingScreenState();
 }
 
-class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
+class _OnboardingScreenState extends ConsumerState<OnboardingScreen> with WidgetsBindingObserver {
   int _currentStep = 0;
   bool _usageAccessGranted = false;
   bool _batteryOptimizationGranted = false;
@@ -20,38 +20,64 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _checkPermissions();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      // Re-check permissions when app resumes (user returns from settings)
+      _checkPermissions();
+    }
   }
 
   Future<void> _checkPermissions() async {
     final tracking = ref.read(trackingServiceProvider);
-    _usageAccessGranted = await tracking.hasUsageAccess();
-    _deviceAdminEnabled = await tracking.isDeviceAdminEnabled();
-    setState(() {});
+    final usageAccess = await tracking.hasUsageAccess();
+    final deviceAdmin = await tracking.isDeviceAdminEnabled();
+    final batteryOptimization = await tracking.isBatteryOptimizationExempt();
+    
+    if (mounted) {
+      setState(() {
+        _usageAccessGranted = usageAccess;
+        _deviceAdminEnabled = deviceAdmin;
+        _batteryOptimizationGranted = batteryOptimization;
+      });
+    }
   }
 
   Future<void> _requestUsageAccess() async {
     final tracking = ref.read(trackingServiceProvider);
-    final granted = await tracking.requestUsageAccess();
-    setState(() {
-      _usageAccessGranted = granted;
-    });
+    await tracking.requestUsageAccess();
+    // Wait a bit for the user to navigate to settings
+    await Future.delayed(const Duration(milliseconds: 500));
+    // Re-check permission when user returns
+    await _checkPermissions();
   }
 
   Future<void> _requestBatteryOptimization() async {
     final tracking = ref.read(trackingServiceProvider);
-    final granted = await tracking.requestBatteryOptimizationExemption();
-    setState(() {
-      _batteryOptimizationGranted = granted;
-    });
+    await tracking.requestBatteryOptimizationExemption();
+    // Wait a bit for the user to navigate to settings
+    await Future.delayed(const Duration(milliseconds: 500));
+    // Re-check permission when user returns
+    await _checkPermissions();
   }
 
   Future<void> _enableDeviceAdmin() async {
     final tracking = ref.read(trackingServiceProvider);
-    final enabled = await tracking.enableDeviceAdmin();
-    setState(() {
-      _deviceAdminEnabled = enabled;
-    });
+    await tracking.enableDeviceAdmin();
+    // Wait a bit for the user to navigate to settings
+    await Future.delayed(const Duration(milliseconds: 500));
+    // Re-check permission when user returns
+    await _checkPermissions();
   }
 
   @override

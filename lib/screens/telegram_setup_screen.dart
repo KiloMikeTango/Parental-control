@@ -19,6 +19,29 @@ class _TelegramSetupScreenState extends ConsumerState<TelegramSetupScreen> {
   bool _testSuccess = false;
 
   @override
+  void initState() {
+    super.initState();
+    _loadExistingValues();
+  }
+
+  Future<void> _loadExistingValues() async {
+    final storage = ref.read(secureStorageProvider);
+    final token = await storage.getTelegramToken();
+    final chatId = await storage.getTelegramChatId();
+    
+    if (mounted) {
+      setState(() {
+        if (token != null) _tokenController.text = token;
+        if (chatId != null) _chatIdController.text = chatId;
+        // If values exist, mark as tested
+        if (token != null && chatId != null) {
+          _testSuccess = true;
+        }
+      });
+    }
+  }
+
+  @override
   void dispose() {
     _tokenController.dispose();
     _chatIdController.dispose();
@@ -34,8 +57,18 @@ class _TelegramSetupScreenState extends ConsumerState<TelegramSetupScreen> {
     });
 
     final storage = ref.read(secureStorageProvider);
-    await storage.setTelegramToken(_tokenController.text.trim());
-    await storage.setTelegramChatId(_chatIdController.text.trim());
+    final token = _tokenController.text.trim();
+    final chatId = _chatIdController.text.trim();
+    
+    print('TelegramSetup: Storing token: ${token.isNotEmpty}, chatId: ${chatId.isNotEmpty}');
+    
+    await storage.setTelegramToken(token);
+    await storage.setTelegramChatId(chatId);
+    
+    // Verify storage
+    final storedToken = await storage.getTelegramToken();
+    final storedChatId = await storage.getTelegramChatId();
+    print('TelegramSetup: Stored token: ${storedToken != null}, stored chatId: ${storedChatId != null}');
 
     final telegram = TelegramService();
     final success = await telegram.testConnection();
