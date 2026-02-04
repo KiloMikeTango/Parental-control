@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../providers/app_state_provider.dart';
@@ -11,22 +12,36 @@ class OnboardingScreen extends ConsumerStatefulWidget {
   ConsumerState<OnboardingScreen> createState() => _OnboardingScreenState();
 }
 
-class _OnboardingScreenState extends ConsumerState<OnboardingScreen> with WidgetsBindingObserver {
+class _OnboardingScreenState extends ConsumerState<OnboardingScreen>
+    with WidgetsBindingObserver {
   int _currentStep = 0;
   bool _usageAccessGranted = false;
   bool _batteryOptimizationGranted = false;
   bool _deviceAdminEnabled = false;
+  Timer? _permissionPoller;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _checkPermissions();
+    _permissionPoller = Timer.periodic(const Duration(seconds: 2), (_) {
+      if (!mounted) return;
+      if (_currentStep >= 1 &&
+          _currentStep <= 3 &&
+          (!_usageAccessGranted ||
+              !_batteryOptimizationGranted ||
+              !_deviceAdminEnabled)) {
+        _checkPermissions();
+      }
+    });
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _permissionPoller?.cancel();
+    _permissionPoller = null;
     super.dispose();
   }
 
@@ -35,6 +50,9 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> with Widget
     if (state == AppLifecycleState.resumed) {
       // Re-check permissions when app resumes (user returns from settings)
       _checkPermissions();
+      if (mounted) {
+        setState(() {});
+      }
     }
   }
 
@@ -43,7 +61,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> with Widget
     final usageAccess = await tracking.hasUsageAccess();
     final deviceAdmin = await tracking.isDeviceAdminEnabled();
     final batteryOptimization = await tracking.isBatteryOptimizationExempt();
-    
+
     if (mounted) {
       setState(() {
         _usageAccessGranted = usageAccess;
@@ -89,7 +107,11 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> with Widget
       ),
       body: Stepper(
         currentStep: _currentStep,
-        onStepContinue: () {
+        onStepContinue: () async {
+          final canContinue = await _ensureCanContinue();
+          if (!canContinue) {
+            return;
+          }
           if (_currentStep < 4) {
             setState(() {
               _currentStep++;
@@ -104,6 +126,23 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> with Widget
               _currentStep--;
             });
           }
+        },
+        controlsBuilder: (context, details) {
+          final canContinue = _canContinueForStep();
+          return Row(
+            children: [
+              ElevatedButton(
+                onPressed: canContinue ? details.onStepContinue : null,
+                child: const Text('Continue'),
+              ),
+              const SizedBox(width: 8),
+              if (_currentStep > 0)
+                TextButton(
+                  onPressed: details.onStepCancel,
+                  child: const Text('Back'),
+                ),
+            ],
+          );
         },
         steps: [
           Step(
@@ -149,9 +188,11 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> with Widget
                 const SizedBox(height: 16),
                 ElevatedButton(
                   onPressed: _usageAccessGranted ? null : _requestUsageAccess,
-                  child: Text(_usageAccessGranted
-                      ? '✓ Permission Granted'
-                      : 'Grant Usage Access'),
+                  child: Text(
+                    _usageAccessGranted
+                        ? '✓ Permission Granted'
+                        : 'Grant Usage Access',
+                  ),
                 ),
                 if (_usageAccessGranted)
                   const Padding(
@@ -181,9 +222,11 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> with Widget
                   onPressed: _batteryOptimizationGranted
                       ? null
                       : _requestBatteryOptimization,
-                  child: Text(_batteryOptimizationGranted
-                      ? '✓ Exemption Granted'
-                      : 'Request Battery Optimization Exemption'),
+                  child: Text(
+                    _batteryOptimizationGranted
+                        ? '✓ Exemption Granted'
+                        : 'Request Battery Optimization Exemption',
+                  ),
                 ),
                 if (_batteryOptimizationGranted)
                   const Padding(
@@ -211,9 +254,16 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> with Widget
                 const SizedBox(height: 16),
                 ElevatedButton(
                   onPressed: _deviceAdminEnabled ? null : _enableDeviceAdmin,
-                  child: Text(_deviceAdminEnabled
-                      ? '✓ Device Admin Enabled'
-                      : 'Enable Device Admin'),
+                  child: Text(
+                    _deviceAdminEnabled
+                        ? '✓ Device Admin Enabled'
+                        : 'Open Device Admin Settings',
+                  ),
+                ),
+                const SizedBox(height: 8),
+                TextButton(
+                  onPressed: _checkPermissions,
+                  child: const Text('Refresh Status'),
                 ),
                 if (_deviceAdminEnabled)
                   const Padding(
@@ -239,9 +289,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> with Widget
                   'Configure your Telegram bot token and chat ID to receive usage reports.',
                 ),
                 SizedBox(height: 16),
-                Text(
-                  'You will be taken to the Telegram setup screen.',
-                ),
+                Text('You will be taken to the Telegram setup screen.'),
               ],
             ),
             isActive: _currentStep >= 4,
@@ -252,13 +300,9 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> with Widget
             content: const Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  'Set up a PIN to protect app settings.',
-                ),
+                Text('Set up a PIN to protect app settings.'),
                 SizedBox(height: 16),
-                Text(
-                  'You will be taken to the PIN setup screen.',
-                ),
+                Text('You will be taken to the PIN setup screen.'),
               ],
             ),
             isActive: _currentStep >= 5,
@@ -297,5 +341,25 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> with Widget
         }
       }
     }
+  }
+
+  bool _canContinueForStep() {
+    if (_currentStep == 1) return _usageAccessGranted;
+    if (_currentStep == 2) return _batteryOptimizationGranted;
+    if (_currentStep == 3) return _deviceAdminEnabled;
+    return true;
+  }
+
+  Future<bool> _ensureCanContinue() async {
+    await _checkPermissions();
+    final canContinue = _canContinueForStep();
+    if (!canContinue && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please enable the required permission first.'),
+        ),
+      );
+    }
+    return canContinue;
   }
 }

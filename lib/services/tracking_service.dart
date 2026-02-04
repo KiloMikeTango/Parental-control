@@ -103,8 +103,8 @@ class TrackingService {
   // Enable Device Admin
   Future<bool> enableDeviceAdmin() async {
     try {
-      final result = await _channel.invokeMethod<bool>('enableDeviceAdmin');
-      return result ?? false;
+      await _channel.invokeMethod<bool>('enableDeviceAdmin');
+      return await isDeviceAdminEnabled();
     } catch (e) {
       return false;
     }

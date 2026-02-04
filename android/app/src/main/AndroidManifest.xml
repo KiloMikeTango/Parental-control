@@ -10,7 +10,6 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- POST_NOTIFICATIONS is required for Android 13+ (API 33+) -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <uses-permission android:name="android.permission.BIND_DEVICE_ADMIN" />
 
     <application
         android:label="PC"
@@ -49,6 +48,8 @@
         <receiver
             android:name=".DeviceAdminReceiver"
             android:permission="android.permission.BIND_DEVICE_ADMIN"
+            android:label="@string/device_admin_label"
+            android:description="@string/device_admin_description"
             android:exported="true">
             <meta-data
                 android:name="android.app.device_admin"

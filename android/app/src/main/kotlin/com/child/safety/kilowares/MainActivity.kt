@@ -61,16 +61,40 @@ class MainActivity: FlutterActivity() {
                     result.success(isBatteryOptimizationExempt())
                 }
                 "enableDeviceAdmin" -> {
-                    val intent = Intent(DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN)
-                    intent.putExtra(DevicePolicyManager.EXTRA_DEVICE_ADMIN, DeviceAdminReceiver.getComponentName(this))
-                    intent.putExtra(DevicePolicyManager.EXTRA_ADD_EXPLANATION, "This app requires device admin to protect monitoring settings.")
-                    startActivity(intent)
+                    val intents = listOf(
+                        Intent().setClassName(
+                            "com.android.settings",
+                            "com.android.settings.Settings\$DeviceAdminSettingsActivity"
+                        ),
+                        Intent().setClassName(
+                            "com.android.settings",
+                            "com.android.settings.DeviceAdminSettings"
+                        ),
+                        Intent("android.settings.DEVICE_ADMIN_SETTINGS"),
+                        Intent(Settings.ACTION_SECURITY_SETTINGS),
+                        Intent(Settings.ACTION_SETTINGS)
+                    )
+                    var launched = false
+                    for (intent in intents) {
+                        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        if (packageManager.resolveActivity(intent, 0) != null) {
+                            startActivity(intent)
+                            launched = true
+                            break
+                        }
+                    }
+                    if (!launched) {
+                        startActivity(Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                    }
                     result.success(true)
                 }
                 "isDeviceAdminEnabled" -> {
                     val devicePolicyManager = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
                     val adminComponent = DeviceAdminReceiver.getComponentName(this)
-                    result.success(devicePolicyManager.isAdminActive(adminComponent))
+                    val isActive = devicePolicyManager.isAdminActive(adminComponent)
+                    val activeAdmins = devicePolicyManager.activeAdmins
+                    val packageActive = activeAdmins?.any { it.packageName == packageName } == true
+                    result.success(isActive || packageActive)
                 }
                 "scheduleSync" -> {
                     SyncWorker.scheduleSync(this)
