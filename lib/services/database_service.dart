@@ -71,6 +71,18 @@ class DatabaseService {
     return await db.insert('usage_sessions', session.toMap());
   }
 
+  Future<List<UsageSession>> getUnsentUsageStarts({int limit = 100}) async {
+    final db = await database;
+    final List<Map<String, dynamic>> maps = await db.query(
+      'usage_sessions',
+      where: 'sent = ? AND end_time IS NULL',
+      whereArgs: [0],
+      orderBy: 'start_time ASC',
+      limit: limit,
+    );
+    return List.generate(maps.length, (i) => UsageSession.fromMap(maps[i]));
+  }
+
   Future<List<UsageSession>> getUnsentUsageSessions({int limit = 100}) async {
     final db = await database;
     final List<Map<String, dynamic>> maps = await db.query(

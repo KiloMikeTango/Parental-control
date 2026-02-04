@@ -11,41 +11,91 @@ class SyncService {
       return false;
     }
 
-    bool allSuccess = true;
+    final queue = <_QueuedReport>[];
 
-    // Sync usage sessions
-    final unsentSessions = await _database.getUnsentUsageSessions();
-    if (unsentSessions.isNotEmpty) {
-      for (final session in unsentSessions) {
-        try {
-          final success = await _telegram.sendUsageReport(session);
-          if (success && session.id != null) {
-            await _database.deleteUsageSession(session.id!);
-          } else {
-            allSuccess = false;
-          }
-        } catch (e, stackTrace) {
-          allSuccess = false;
-        }
-      }
+    final usageStarts = await _database.getUnsentUsageStarts();
+    for (final session in usageStarts) {
+      queue.add(
+        _QueuedReport(
+          timestamp: session.startTime,
+          send: () async {
+            final success = await _telegram.sendCurrentAppReport(
+              appName: session.appName,
+              packageName: session.packageName,
+              startTime: session.startTime,
+            );
+            if (success && session.id != null) {
+              await _database.deleteUsageSession(session.id!);
+              return true;
+            }
+            return false;
+          },
+        ),
+      );
     }
 
-    // Sync interruptions
+    final unsentSessions = await _database.getUnsentUsageSessions();
+    for (final session in unsentSessions) {
+      final endTime = session.endTime ?? session.startTime;
+      queue.add(
+        _QueuedReport(
+          timestamp: endTime,
+          send: () async {
+            final success = await _telegram.sendUsageReport(session);
+            if (success && session.id != null) {
+              await _database.deleteUsageSession(session.id!);
+              return true;
+            }
+            return false;
+          },
+        ),
+      );
+    }
+
     final unsentInterruptions = await _database.getUnsentInterruptions();
     for (final interruption in unsentInterruptions) {
-      final success = await _telegram.sendInterruptionReport(interruption);
-      if (success && interruption.id != null) {
-        await _database.deleteInterruption(interruption.id!);
-      } else {
-        allSuccess = false;
+      queue.add(
+        _QueuedReport(
+          timestamp: interruption.toTime,
+          send: () async {
+            final success = await _telegram.sendInterruptionReport(
+              interruption,
+            );
+            if (success && interruption.id != null) {
+              await _database.deleteInterruption(interruption.id!);
+              return true;
+            }
+            return false;
+          },
+        ),
+      );
+    }
+
+    if (queue.isEmpty) {
+      return true;
+    }
+
+    queue.sort((a, b) => a.timestamp.compareTo(b.timestamp));
+
+    for (final item in queue) {
+      final ok = await item.send();
+      if (!ok) {
+        return false;
       }
     }
 
-    return allSuccess;
+    return true;
   }
 
   Future<void> syncPeriodically() async {
     // This will be called by WorkManager periodically
     await syncAll();
   }
+}
+
+class _QueuedReport {
+  final DateTime timestamp;
+  final Future<bool> Function() send;
+
+  _QueuedReport({required this.timestamp, required this.send});
 }

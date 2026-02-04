@@ -4,15 +4,11 @@ import '../models/heartbeat_log.dart';
 import '../models/interruption.dart';
 import '../services/database_service.dart';
 import '../services/sync_service.dart';
-import '../services/telegram_service.dart';
 import 'dart:async';
 
 class NativeSyncService {
   final DatabaseService _database = DatabaseService();
-  final TelegramService _telegram = TelegramService();
   Timer? _syncTimer;
-  Timer? _pendingSyncTimer;
-  int _sessionsInsertedCount = 0;
 
   // Start polling for usage sessions from native side
   void startPolling() {
@@ -44,16 +40,12 @@ class NativeSyncService {
   void stopPolling() {
     _syncTimer?.cancel();
     _syncTimer = null;
-    _pendingSyncTimer?.cancel();
-    _pendingSyncTimer = null;
   }
 
   Future<void> syncUsageStarts() async {
     try {
       final prefs = await SharedPreferences.getInstance();
       final allKeys = prefs.getKeys();
-      final availability = await _telegram.checkAvailability();
-      final canSend = availability == TelegramAvailability.ok;
 
       final startKeys = allKeys
           .where(
@@ -73,6 +65,7 @@ class NativeSyncService {
 
       final allStartKeys = [...startKeys, ...legacyKeys];
 
+      final events = <_StartEntry>[];
       for (final key in allStartKeys) {
         final isLegacy = !key.startsWith('flutter.');
         final eventId = key
@@ -92,26 +85,33 @@ class NativeSyncService {
             await prefs.remove('${prefix}${eventId}_time');
             continue;
           }
-          final startTime = DateTime.fromMillisecondsSinceEpoch(timeMs);
-          var sent = false;
-          if (canSend) {
-            try {
-              sent = await _telegram.sendCurrentAppReport(
-                appName: appName ?? packageName,
-                packageName: packageName,
-                startTime: startTime,
-              );
-            } catch (e) {
-              print('NativeSync: Error sending current app report: $e');
-            }
-          }
-
-          if (sent) {
-            await prefs.remove(key);
-            await prefs.remove('${prefix}${eventId}_name');
-            await prefs.remove('${prefix}${eventId}_time');
-          }
+          events.add(
+            _StartEntry(
+              key: key,
+              prefix: prefix,
+              eventId: eventId,
+              packageName: packageName,
+              appName: appName ?? packageName,
+              timeMs: timeMs,
+            ),
+          );
         }
+      }
+
+      events.sort((a, b) => a.timeMs.compareTo(b.timeMs));
+      for (final entry in events) {
+        final startTime = DateTime.fromMillisecondsSinceEpoch(entry.timeMs);
+        final session = UsageSession(
+          packageName: entry.packageName,
+          appName: entry.appName,
+          startTime: startTime,
+          endTime: null,
+          durationMs: null,
+        );
+        await _database.insertUsageSession(session);
+        await prefs.remove(entry.key);
+        await prefs.remove('${entry.prefix}${entry.eventId}_name');
+        await prefs.remove('${entry.prefix}${entry.eventId}_time');
       }
     } catch (e) {
       print('Error syncing usage starts: $e');
@@ -122,8 +122,6 @@ class NativeSyncService {
     try {
       final prefs = await SharedPreferences.getInstance();
       final allKeys = prefs.getKeys();
-      final availability = await _telegram.checkAvailability();
-      final canSend = availability == TelegramAvailability.ok;
       print('NativeSync: All SharedPreferences keys count: ${allKeys.length}');
 
       // Debug: Print first few keys to see what we have
@@ -160,6 +158,7 @@ class NativeSyncService {
         'NativeSync: Total session keys to process: ${allSessionKeys.length}',
       );
 
+      final sessions = <_SessionEntry>[];
       for (final key in allSessionKeys) {
         // Check if this is a legacy key (without flutter. prefix)
         final isLegacy = !key.startsWith('flutter.');
@@ -193,81 +192,20 @@ class NativeSyncService {
                 ? int.parse(durationStr)
                 : (endTime - startTime);
 
-            final session = UsageSession(
-              packageName: packageName,
-              appName: appName,
-              startTime: DateTime.fromMillisecondsSinceEpoch(startTime),
-              endTime: DateTime.fromMillisecondsSinceEpoch(endTime),
-              durationMs: duration,
+            sessions.add(
+              _SessionEntry(
+                key: key,
+                prefix: prefix,
+                sessionId: sessionId,
+                packageName: packageName,
+                appName: appName,
+                startTime: startTime,
+                endTime: endTime,
+                duration: duration,
+              ),
             );
-
-            var sentNow = false;
-            if (canSend) {
-              try {
-                sentNow = await _telegram.sendUsageReport(session);
-              } catch (e) {
-                print('NativeSync: Error sending usage report: $e');
-              }
-            }
-
-            if (!sentNow) {
-              final dbSessionId = await _database.insertUsageSession(session);
-              _sessionsInsertedCount++;
-              print(
-                'NativeSync: Queued session: $appName ($packageName) - ${duration}ms, DB ID: $dbSessionId (Total inserted this cycle: $_sessionsInsertedCount)',
-              );
-            } else {
-              print(
-                'NativeSync: Sent session immediately: $appName ($packageName) - ${duration}ms',
-              );
-            }
-
-            await prefs.remove(key);
-            await prefs.remove('${prefix}${sessionId}_name');
-            await prefs.remove('${prefix}${sessionId}_start');
-            if (endTimeStr != null)
-              await prefs.remove('${prefix}${sessionId}_end');
-            if (durationStr != null)
-              await prefs.remove('${prefix}${sessionId}_duration');
-
-            if (!sentNow && canSend) {
-              _pendingSyncTimer?.cancel();
-              _pendingSyncTimer = Timer(const Duration(seconds: 2), () async {
-                try {
-                  final count = _sessionsInsertedCount;
-                  print(
-                    'NativeSync: Triggering Telegram sync after batch insert ($count sessions)',
-                  );
-                  final syncService = SyncService();
-                  final success = await syncService.syncAll();
-                  print('NativeSync: Sync result: $success');
-                  _sessionsInsertedCount = 0;
-                } catch (e, stackTrace) {
-                  print(
-                    'NativeSync: Error triggering sync after session insert: $e',
-                  );
-                  print('NativeSync: Stack trace: $stackTrace');
-                }
-              });
-
-              Future.delayed(const Duration(seconds: 5), () async {
-                if (_sessionsInsertedCount > 0) {
-                  print(
-                    'NativeSync: Backup sync triggered ($_sessionsInsertedCount sessions still pending)',
-                  );
-                  try {
-                    final syncService = SyncService();
-                    await syncService.syncAll();
-                    _sessionsInsertedCount = 0;
-                  } catch (e) {
-                    print('NativeSync: Error in backup sync: $e');
-                  }
-                }
-              });
-            }
           } catch (e) {
             print('Error parsing session data: $e');
-            // Remove invalid entry
             await prefs.remove(key);
             await prefs.remove('${prefix}${sessionId}_name');
             await prefs.remove('${prefix}${sessionId}_start');
@@ -275,6 +213,24 @@ class NativeSyncService {
             await prefs.remove('${prefix}${sessionId}_duration');
           }
         }
+      }
+
+      sessions.sort((a, b) => a.endTime.compareTo(b.endTime));
+      for (final entry in sessions) {
+        final session = UsageSession(
+          packageName: entry.packageName,
+          appName: entry.appName,
+          startTime: DateTime.fromMillisecondsSinceEpoch(entry.startTime),
+          endTime: DateTime.fromMillisecondsSinceEpoch(entry.endTime),
+          durationMs: entry.duration,
+        );
+        await _database.insertUsageSession(session);
+
+        await prefs.remove(entry.key);
+        await prefs.remove('${entry.prefix}${entry.sessionId}_name');
+        await prefs.remove('${entry.prefix}${entry.sessionId}_start');
+        await prefs.remove('${entry.prefix}${entry.sessionId}_end');
+        await prefs.remove('${entry.prefix}${entry.sessionId}_duration');
       }
     } catch (e) {
       print('Error syncing usage sessions: $e');
@@ -353,4 +309,44 @@ class NativeSyncService {
       print('Error syncing interruptions: $e');
     }
   }
+}
+
+class _StartEntry {
+  final String key;
+  final String prefix;
+  final String eventId;
+  final String packageName;
+  final String appName;
+  final int timeMs;
+
+  _StartEntry({
+    required this.key,
+    required this.prefix,
+    required this.eventId,
+    required this.packageName,
+    required this.appName,
+    required this.timeMs,
+  });
+}
+
+class _SessionEntry {
+  final String key;
+  final String prefix;
+  final String sessionId;
+  final String packageName;
+  final String appName;
+  final int startTime;
+  final int endTime;
+  final int duration;
+
+  _SessionEntry({
+    required this.key,
+    required this.prefix,
+    required this.sessionId,
+    required this.packageName,
+    required this.appName,
+    required this.startTime,
+    required this.endTime,
+    required this.duration,
+  });
 }

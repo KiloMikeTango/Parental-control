@@ -19,12 +19,12 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import java.text.SimpleDateFormat
-import java.util.*
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 class TrackingService : Service() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -46,6 +46,202 @@ class TrackingService : Service() {
         
         @Volatile
         var isRunning = false
+
+        private val sendScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        private val sendLock = Any()
+        @Volatile
+        private var isSendingReports = false
+
+        fun triggerSendPendingReports(context: Context) {
+            synchronized(sendLock) {
+                if (isSendingReports) return
+                isSendingReports = true
+            }
+            sendScope.launch {
+                try {
+                    val prefs = context.getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+                    val token = resolveTelegramValue(prefs, "telegram_token")
+                    val chatId = resolveTelegramValue(prefs, "telegram_chat_id")
+                    if (token.isNullOrEmpty() || chatId.isNullOrEmpty()) {
+                        return@launch
+                    }
+
+                    val queue = mutableListOf<PendingReport>()
+                    val allKeys = prefs.all.keys
+
+                    val startKeys = allKeys.filter { key ->
+                        key.startsWith("flutter.enter_") && key.endsWith("_package")
+                    } + allKeys.filter { key ->
+                        key.startsWith("enter_") && key.endsWith("_package") && !key.startsWith("flutter.")
+                    }
+
+                    for (key in startKeys) {
+                        val isLegacy = !key.startsWith("flutter.")
+                        val eventId = key.removePrefix("flutter.").removeSuffix("_package")
+                        val prefix = if (isLegacy) "" else "flutter."
+                        val packageName = prefs.getString(key, null)
+                        val appName = prefs.getString("${prefix}${eventId}_name", null)
+                        val timeStr = prefs.getString("${prefix}${eventId}_time", null)
+                        val timeMs = timeStr?.toLongOrNull()
+                        if (packageName != null && timeMs != null) {
+                            val displayName = if (appName.isNullOrEmpty()) packageName else appName
+                            val timestamp = formatTimestamp(timeMs)
+                            val message = "App: $displayName\nAt : $timestamp"
+                            queue.add(
+                                PendingReport(
+                                    timestamp = timeMs,
+                                    send = { sendTelegramMessage(token, chatId, message) },
+                                    onSuccess = {
+                                        prefs.edit()
+                                            .remove(key)
+                                            .remove("${prefix}${eventId}_name")
+                                            .remove("${prefix}${eventId}_time")
+                                            .apply()
+                                    }
+                                )
+                            )
+                        }
+                    }
+
+                    val sessionKeys = allKeys.filter { key ->
+                        key.startsWith("flutter.session_") && key.endsWith("_package")
+                    } + allKeys.filter { key ->
+                        key.startsWith("session_") && key.endsWith("_package") && !key.startsWith("flutter.")
+                    }
+
+                    for (key in sessionKeys) {
+                        val isLegacy = !key.startsWith("flutter.")
+                        val sessionId = key.removePrefix("flutter.").removeSuffix("_package")
+                        val prefix = if (isLegacy) "" else "flutter."
+                        val packageName = prefs.getString(key, null)
+                        val appName = prefs.getString("${prefix}${sessionId}_name", null)
+                        val startStr = prefs.getString("${prefix}${sessionId}_start", null)
+                        val endStr = prefs.getString("${prefix}${sessionId}_end", null)
+                        val durationStr = prefs.getString("${prefix}${sessionId}_duration", null)
+                        val startMs = startStr?.toLongOrNull()
+                        val endMs = endStr?.toLongOrNull()
+                        if (packageName != null && startMs != null && endMs != null) {
+                            val durationMs = durationStr?.toLongOrNull() ?: (endMs - startMs).coerceAtLeast(0)
+                            val startTime = formatTimestamp(startMs)
+                            val endTime = formatTimestamp(endMs)
+                            val duration = formatDuration(durationMs)
+                            val message =
+                                "📱 App Usage\n\nApp: ${appName ?: packageName}\nPackage: $packageName\nFrom: $startTime\nTo: $endTime\nDuration: $duration"
+                            queue.add(
+                                PendingReport(
+                                    timestamp = endMs,
+                                    send = { sendTelegramMessage(token, chatId, message) },
+                                    onSuccess = {
+                                        prefs.edit()
+                                            .remove(key)
+                                            .remove("${prefix}${sessionId}_name")
+                                            .remove("${prefix}${sessionId}_start")
+                                            .remove("${prefix}${sessionId}_end")
+                                            .remove("${prefix}${sessionId}_duration")
+                                            .apply()
+                                    }
+                                )
+                            )
+                        }
+                    }
+
+                    val interruptionPrefs = context.getSharedPreferences("interruptions", Context.MODE_PRIVATE)
+                    val interruptionKeys = interruptionPrefs.all.keys.filter { it.endsWith("_from") }
+                    for (key in interruptionKeys) {
+                        val baseKey = key.removeSuffix("_from")
+                        val fromStr = interruptionPrefs.getString("${baseKey}_from", null)
+                        val toStr = interruptionPrefs.getString("${baseKey}_to", null)
+                        val durationStr = interruptionPrefs.getString("${baseKey}_duration", null)
+                        val fromMs = fromStr?.toLongOrNull()
+                        val toMs = toStr?.toLongOrNull()
+                        val durationMs = durationStr?.toLongOrNull()
+                        if (fromMs != null && toMs != null && durationMs != null) {
+                            val fromTime = formatTimestamp(fromMs)
+                            val toTime = formatTimestamp(toMs)
+                            val duration = formatDuration(durationMs)
+                            val message =
+                                "⚠️ Monitoring Interruption\n\nFrom: $fromTime\nTo: $toTime\nDuration: $duration"
+                            queue.add(
+                                PendingReport(
+                                    timestamp = toMs,
+                                    send = { sendTelegramMessage(token, chatId, message) },
+                                    onSuccess = {
+                                        interruptionPrefs.edit()
+                                            .remove("${baseKey}_from")
+                                            .remove("${baseKey}_to")
+                                            .remove("${baseKey}_duration")
+                                            .apply()
+                                    }
+                                )
+                            )
+                        }
+                    }
+
+                    if (queue.isNotEmpty()) {
+                        queue.sortBy { it.timestamp }
+                        for (item in queue) {
+                            val ok = item.send()
+                            if (!ok) {
+                                break
+                            }
+                            item.onSuccess()
+                        }
+                    }
+                } finally {
+                    synchronized(sendLock) {
+                        isSendingReports = false
+                    }
+                }
+            }
+        }
+
+        private fun formatTimestamp(timeMs: Long): String {
+            val formatter = SimpleDateFormat("yyyy-MM-dd hh:mm a", Locale.getDefault())
+            return formatter.format(Date(timeMs))
+        }
+
+        private fun formatDuration(milliseconds: Long): String {
+            val totalSeconds = milliseconds / 1000
+            val hours = totalSeconds / 3600
+            val minutes = (totalSeconds % 3600) / 60
+            val seconds = totalSeconds % 60
+            return when {
+                hours > 0 -> "${hours}h ${minutes}m"
+                minutes > 0 -> "${minutes}m ${seconds}s"
+                else -> "${seconds}s"
+            }
+        }
+
+        private fun sendTelegramMessage(token: String, chatId: String, message: String): Boolean {
+            return try {
+                val url = URL("https://api.telegram.org/bot$token/sendMessage")
+                val connection = url.openConnection() as HttpURLConnection
+                connection.requestMethod = "POST"
+                connection.connectTimeout = 10000
+                connection.readTimeout = 10000
+                connection.doOutput = true
+
+                val data = "chat_id=${URLEncoder.encode(chatId, "UTF-8")}" +
+                    "&text=${URLEncoder.encode(message, "UTF-8")}"
+                connection.outputStream.use { output ->
+                    output.write(data.toByteArray(Charsets.UTF_8))
+                }
+                val code = connection.responseCode
+                connection.disconnect()
+                code == 200
+            } catch (e: Exception) {
+                false
+            }
+        }
+
+        private fun resolveTelegramValue(
+            prefs: android.content.SharedPreferences,
+            key: String
+        ): String? {
+            val direct = prefs.getString(key, null)
+            if (!direct.isNullOrEmpty()) return direct
+            return prefs.getString("flutter.$key", null)
+        }
     }
 
     override fun onCreate() {
@@ -207,6 +403,12 @@ class TrackingService : Service() {
         val startTime: Long
     )
 
+    private data class PendingReport(
+        val timestamp: Long,
+        val send: () -> Boolean,
+        val onSuccess: () -> Unit
+    )
+
     private fun startSession(packageName: String, startTime: Long) {
         if (!isTrackablePackage(packageName)) {
             if (activeSession != null) {
@@ -244,23 +446,19 @@ class TrackingService : Service() {
                     return@launch
                 }
 
-                val sent = sendTelegramMessage(
-                    buildUsageMessage(appName, packageName, startTime, normalizedEndTime, duration)
-                )
-                if (!sent) {
-                    val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
-                    val sessionKey = "session_${System.currentTimeMillis()}"
-                    val editor = prefs.edit()
-                    editor.putString("flutter.${sessionKey}_package", packageName)
-                    editor.putString("flutter.${sessionKey}_name", appName)
-                    editor.putString("flutter.${sessionKey}_start", startTime.toString())
-                    editor.putString("flutter.${sessionKey}_end", normalizedEndTime.toString())
-                    editor.putString("flutter.${sessionKey}_duration", duration.toString())
-                    editor.commit()
-                    android.util.Log.d("TrackingService", "Stored session in SharedPreferences: flutter.$sessionKey")
-                }
+                val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+                val sessionKey = "session_${System.currentTimeMillis()}"
+                val editor = prefs.edit()
+                editor.putString("flutter.${sessionKey}_package", packageName)
+                editor.putString("flutter.${sessionKey}_name", appName)
+                editor.putString("flutter.${sessionKey}_start", startTime.toString())
+                editor.putString("flutter.${sessionKey}_end", normalizedEndTime.toString())
+                editor.putString("flutter.${sessionKey}_duration", duration.toString())
+                editor.commit()
+                android.util.Log.d("TrackingService", "Stored session in SharedPreferences: flutter.$sessionKey")
 
                 android.util.Log.d("TrackingService", "Saved session: $appName ($packageName) - ${duration}ms")
+                triggerSendPendingReports(this@TrackingService)
             } catch (e: Exception) {
                 android.util.Log.e("TrackingService", "Error handling app session end", e)
                 e.printStackTrace()
@@ -275,78 +473,18 @@ class TrackingService : Service() {
                 val appName = resolveTrackableAppName(packageName) ?: return@launch
 
                 val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
-                val sent = sendTelegramMessage("App: $appName\nAt : ${formatDateTime(startTime)}")
-                if (!sent) {
-                    val eventKey = "enter_${System.currentTimeMillis()}"
-                    val editor = prefs.edit()
-                    editor.putString("flutter.${eventKey}_package", packageName)
-                    editor.putString("flutter.${eventKey}_name", appName)
-                    editor.putString("flutter.${eventKey}_time", startTime.toString())
-                    editor.commit()
-                    android.util.Log.d("TrackingService", "Stored enter event in SharedPreferences: flutter.$eventKey")
-                }
+                val eventKey = "enter_${System.currentTimeMillis()}"
+                val editor = prefs.edit()
+                editor.putString("flutter.${eventKey}_package", packageName)
+                editor.putString("flutter.${eventKey}_name", appName)
+                editor.putString("flutter.${eventKey}_time", startTime.toString())
+                editor.commit()
+                android.util.Log.d("TrackingService", "Stored enter event in SharedPreferences: flutter.$eventKey")
+                triggerSendPendingReports(this@TrackingService)
             } catch (e: Exception) {
                 android.util.Log.e("TrackingService", "Error handling app session start", e)
                 e.printStackTrace()
             }
-        }
-    }
-
-    private suspend fun sendTelegramMessage(message: String): Boolean {
-        return withContext(Dispatchers.IO) {
-            try {
-                val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
-                val token = prefs.getString("flutter.telegram_token", null)
-                val chatId = prefs.getString("flutter.telegram_chat_id", null)
-                if (token.isNullOrBlank() || chatId.isNullOrBlank()) return@withContext false
-
-                val url = URL("https://api.telegram.org/bot$token/sendMessage")
-                val connection = (url.openConnection() as HttpURLConnection).apply {
-                    requestMethod = "POST"
-                    doOutput = true
-                    connectTimeout = 5000
-                    readTimeout = 5000
-                }
-                val data =
-                    "chat_id=${URLEncoder.encode(chatId, "UTF-8")}&text=${URLEncoder.encode(message, "UTF-8")}"
-                connection.outputStream.use { it.write(data.toByteArray(Charsets.UTF_8)) }
-                val responseCode = connection.responseCode
-                connection.disconnect()
-                responseCode == 200
-            } catch (e: Exception) {
-                false
-            }
-        }
-    }
-
-    private fun buildUsageMessage(
-        appName: String,
-        packageName: String,
-        startTime: Long,
-        endTime: Long,
-        durationMs: Long
-    ): String {
-        val from = formatDateTime(startTime)
-        val to = formatDateTime(endTime)
-        val duration = formatDuration(durationMs)
-        return "📱 App Usage\n\nApp: $appName\nPackage: $packageName\nFrom: $from\nTo: $to\nDuration: $duration"
-    }
-
-    private fun formatDateTime(timestamp: Long): String {
-        val formatter = SimpleDateFormat("yyyy-MM-dd hh:mm a", Locale.getDefault())
-        return formatter.format(Date(timestamp))
-    }
-
-    private fun formatDuration(durationMs: Long): String {
-        val seconds = durationMs / 1000
-        val minutes = seconds / 60
-        val hours = minutes / 60
-        val remainingMinutes = minutes % 60
-        val remainingSeconds = seconds % 60
-        return when {
-            hours > 0 -> "${hours}h ${remainingMinutes}m"
-            minutes > 0 -> "${minutes}m ${remainingSeconds}s"
-            else -> "${remainingSeconds}s"
         }
     }
 

@@ -24,6 +24,7 @@ class SyncWorker(context: Context, params: WorkerParameters) : Worker(context, p
             
             // Check for interruptions (gap in heartbeat)
             checkForInterruptions()
+            TrackingService.triggerSendPendingReports(applicationContext)
             
             return Result.success()
         } catch (e: Exception) {
