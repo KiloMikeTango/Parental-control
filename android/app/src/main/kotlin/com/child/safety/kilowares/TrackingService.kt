@@ -153,10 +153,13 @@ class TrackingService : Service() {
                     lastProcessedEventTime = event.timeStamp
 
                     when (event.eventType) {
-                        UsageEvents.Event.MOVE_TO_FOREGROUND -> {
+                        UsageEvents.Event.MOVE_TO_FOREGROUND,
+                        UsageEvents.Event.ACTIVITY_RESUMED -> {
                             startSession(event.packageName, event.timeStamp)
                         }
-                        UsageEvents.Event.MOVE_TO_BACKGROUND -> {
+                        UsageEvents.Event.MOVE_TO_BACKGROUND,
+                        UsageEvents.Event.ACTIVITY_PAUSED,
+                        UsageEvents.Event.ACTIVITY_STOPPED -> {
                             if (activeSession?.packageName == event.packageName) {
                                 endSession(event.timeStamp)
                             }
@@ -365,12 +368,13 @@ class TrackingService : Service() {
     }
 
     private fun isTrackablePackage(packageName: String): Boolean {
+        if (packageName == this.packageName) return false
         if (isHomePackage(packageName)) return false
         val launchablePackages = getLaunchablePackages()
-        if (launchablePackages != null) {
+        if (launchablePackages != null && launchablePackages.isNotEmpty()) {
             return launchablePackages.contains(packageName)
         }
-        return packageManager.getLaunchIntentForPackage(packageName) != null
+        return true
     }
 
     private fun resolveTrackableAppName(packageName: String): String? {
