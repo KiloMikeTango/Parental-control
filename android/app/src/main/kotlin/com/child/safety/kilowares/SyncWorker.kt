@@ -34,9 +34,9 @@ class SyncWorker(context: Context, params: WorkerParameters) : Worker(context, p
     }
 
     private fun checkForInterruptions() {
-        val prefs = applicationContext.getSharedPreferences("heartbeats", Context.MODE_PRIVATE)
-        // Get heartbeat as string (we store it as string now)
-        val lastHeartbeatStr = prefs.getString("last_heartbeat", null)
+        val prefs = applicationContext.getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+        val lastHeartbeatStr = prefs.getString("flutter.last_heartbeat", null)
+            ?: prefs.getString("last_heartbeat", null)
         
         val lastHeartbeat = if (lastHeartbeatStr != null) {
             try {
@@ -55,12 +55,12 @@ class SyncWorker(context: Context, params: WorkerParameters) : Worker(context, p
             // If gap is more than 5 minutes, consider it an interruption
             if (gap > 5 * 60 * 1000) {
                 // Log interruption
-                val interruptionPrefs = applicationContext.getSharedPreferences("interruptions", Context.MODE_PRIVATE)
+                val interruptionPrefs = applicationContext.getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
                 val interruptionKey = "interruption_${System.currentTimeMillis()}"
                 interruptionPrefs.edit().apply {
-                    putString("${interruptionKey}_from", lastHeartbeat.toString())
-                    putString("${interruptionKey}_to", now.toString())
-                    putString("${interruptionKey}_duration", gap.toString())
+                    putString("flutter.${interruptionKey}_from", lastHeartbeat.toString())
+                    putString("flutter.${interruptionKey}_to", now.toString())
+                    putString("flutter.${interruptionKey}_duration", gap.toString())
                     apply()
                 }
                 android.util.Log.w("SyncWorker", "Interruption detected: ${gap / 1000 / 60} minutes")

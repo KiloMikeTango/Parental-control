@@ -139,7 +139,7 @@ The app sends two types of reports:
 📱 App Usage
 
 App: YouTube
-Package: com.google.android.youtube
+Package: com.google.android.youtube 
 From: 2026-02-04 12:26 AM
 To: 2026-02-04 12:27 AM
 Duration: 2h 24m

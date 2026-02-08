@@ -13,7 +13,7 @@ class TelegramService {
   final SecureStorageService _secureStorage = SecureStorageService();
   final Connectivity _connectivity = Connectivity();
 
-  Future<bool> sendUsageReport(UsageSession session) async {
+  Future<bool> sendUsageReport(UsageSession session, {String? label}) async {
     try {
       final config = await _getConfig();
       if (config == null) {
@@ -29,16 +29,19 @@ class TelegramService {
           ? DateFormat('yyyy-MM-dd hh:mm a').format(session.endTime!)
           : DateFormat('yyyy-MM-dd hh:mm a').format(session.startTime);
 
-      final message =
-          '''
-📱 App Usage
+      final message = _applyLabel(
+        '''
+📱 App အသုံးပြုမှု
 
-App: ${session.appName}
+အသုံးပြုခဲ့သည့် App: ${session.appName}
 Package: ${session.packageName}
-From: $startTime
-To: $endTime
-Duration: $duration
-''';
+
+$startTime မှ $endTime အထိအသုံးပြုခဲ့ပါသည်။
+
+စုစုပေါင်းအသုံးပြုချိန်: $duration
+''',
+        label,
+      );
 
       final url = 'https://api.telegram.org/bot${config.token}/sendMessage';
       final response = await _dio.post(
@@ -93,6 +96,7 @@ Duration: $duration
     required String appName,
     required String packageName,
     required DateTime startTime,
+    String? label,
   }) async {
     try {
       final config = await _getConfig();
@@ -102,7 +106,10 @@ Duration: $duration
 
       final displayName = appName.isNotEmpty ? appName : packageName;
       final timestamp = DateFormat('yyyy-MM-dd hh:mm a').format(startTime);
-      final message = 'App: $displayName\nAt : $timestamp';
+      final message = _applyLabel(
+        'အသုံးပြုနေသည့် App: $displayName\nစတင်အသုံးပြုချိန်: $timestamp',
+        label,
+      );
 
       final url = 'https://api.telegram.org/bot${config.token}/sendMessage';
 
@@ -121,7 +128,7 @@ Duration: $duration
     }
   }
 
-  Future<bool> sendInterruptionReport(Interruption interruption) async {
+  Future<bool> sendInterruptionReport(Interruption interruption, {String? label}) async {
     try {
       final config = await _getConfig();
       if (config == null) {
@@ -136,14 +143,16 @@ Duration: $duration
         'yyyy-MM-dd hh:mm a',
       ).format(interruption.toTime);
 
-      final message =
-          '''
+      final message = _applyLabel(
+        '''
 ⚠️ Monitoring Interruption
 
 From: $fromTime
 To: $toTime
 Duration: $duration
-''';
+''',
+        label,
+      );
 
       final url = 'https://api.telegram.org/bot${config.token}/sendMessage';
 
@@ -219,6 +228,13 @@ Duration: $duration
     } else {
       return '${seconds}s';
     }
+  }
+
+  String _applyLabel(String message, String? label) {
+    if (label == null || label.isEmpty) {
+      return message;
+    }
+    return '$label\n\n$message';
   }
 }
 

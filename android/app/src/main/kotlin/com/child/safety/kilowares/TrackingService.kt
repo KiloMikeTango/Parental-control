@@ -18,6 +18,7 @@ import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.net.HttpURLConnection
 import java.net.URL
@@ -37,6 +38,9 @@ class TrackingService : Service() {
     private var cachedHomePackagesTime: Long = 0
     private var cachedLaunchablePackages: Set<String>? = null
     private var cachedLaunchablePackagesTime: Long = 0
+    private var lastStartPackage: String? = null
+    private var lastStartTime: Long = 0
+    private val startDebounceMs = 4000L
     
     companion object {
         const val ACTION_START = "com.child.safety.kilowares.START_TRACKING"
@@ -51,6 +55,9 @@ class TrackingService : Service() {
         private val sendLock = Any()
         @Volatile
         private var isSendingReports = false
+        private const val sendDelayMs = 3000L
+        private const val delayedLabelThresholdMs = 30_000L
+        private const val delayedLabel = "Delayed/Offline"
 
         fun triggerSendPendingReports(context: Context) {
             synchronized(sendLock) {
@@ -74,33 +81,36 @@ class TrackingService : Service() {
                     } + allKeys.filter { key ->
                         key.startsWith("enter_") && key.endsWith("_package") && !key.startsWith("flutter.")
                     }
+                    val nowMs = System.currentTimeMillis()
 
                     for (key in startKeys) {
                         val isLegacy = !key.startsWith("flutter.")
                         val eventId = key.removePrefix("flutter.").removeSuffix("_package")
                         val prefix = if (isLegacy) "" else "flutter."
-                        val packageName = prefs.getString(key, null)
+                        val packageName = prefs.getString(key, null) ?: continue
                         val appName = prefs.getString("${prefix}${eventId}_name", null)
                         val timeStr = prefs.getString("${prefix}${eventId}_time", null)
-                        val timeMs = timeStr?.toLongOrNull()
-                        if (packageName != null && timeMs != null) {
-                            val displayName = if (appName.isNullOrEmpty()) packageName else appName
-                            val timestamp = formatTimestamp(timeMs)
-                            val message = "App: $displayName\nAt : $timestamp"
-                            queue.add(
-                                PendingReport(
-                                    timestamp = timeMs,
-                                    send = { sendTelegramMessage(token, chatId, message) },
-                                    onSuccess = {
-                                        prefs.edit()
-                                            .remove(key)
-                                            .remove("${prefix}${eventId}_name")
-                                            .remove("${prefix}${eventId}_time")
-                                            .apply()
-                                    }
-                                )
+                        val timeMs = timeStr?.toLongOrNull() ?: continue
+                        val displayName = if (appName.isNullOrEmpty()) packageName else appName
+                        val timestamp = formatTimestamp(timeMs)
+                        val message = applyDelayedLabel(
+                            "အသုံးပြုနေသည့် App: $displayName\nစတင်အသုံးပြုချိန်: $timestamp",
+                            timeMs,
+                            nowMs
+                        )
+                        queue.add(
+                            PendingReport(
+                                timestamp = timeMs,
+                                send = { sendTelegramMessage(token, chatId, message) },
+                                onSuccess = {
+                                    prefs.edit()
+                                        .remove(key)
+                                        .remove("${prefix}${eventId}_name")
+                                        .remove("${prefix}${eventId}_time")
+                                        .apply()
+                                }
                             )
-                        }
+                        )
                     }
 
                     val sessionKeys = allKeys.filter { key ->
@@ -113,36 +123,37 @@ class TrackingService : Service() {
                         val isLegacy = !key.startsWith("flutter.")
                         val sessionId = key.removePrefix("flutter.").removeSuffix("_package")
                         val prefix = if (isLegacy) "" else "flutter."
-                        val packageName = prefs.getString(key, null)
+                        val packageName = prefs.getString(key, null) ?: continue
                         val appName = prefs.getString("${prefix}${sessionId}_name", null)
                         val startStr = prefs.getString("${prefix}${sessionId}_start", null)
                         val endStr = prefs.getString("${prefix}${sessionId}_end", null)
                         val durationStr = prefs.getString("${prefix}${sessionId}_duration", null)
-                        val startMs = startStr?.toLongOrNull()
-                        val endMs = endStr?.toLongOrNull()
-                        if (packageName != null && startMs != null && endMs != null) {
-                            val durationMs = durationStr?.toLongOrNull() ?: (endMs - startMs).coerceAtLeast(0)
-                            val startTime = formatTimestamp(startMs)
-                            val endTime = formatTimestamp(endMs)
-                            val duration = formatDuration(durationMs)
-                            val message =
-                                "📱 App Usage\n\nApp: ${appName ?: packageName}\nPackage: $packageName\nFrom: $startTime\nTo: $endTime\nDuration: $duration"
-                            queue.add(
-                                PendingReport(
-                                    timestamp = endMs,
-                                    send = { sendTelegramMessage(token, chatId, message) },
-                                    onSuccess = {
-                                        prefs.edit()
-                                            .remove(key)
-                                            .remove("${prefix}${sessionId}_name")
-                                            .remove("${prefix}${sessionId}_start")
-                                            .remove("${prefix}${sessionId}_end")
-                                            .remove("${prefix}${sessionId}_duration")
-                                            .apply()
-                                    }
-                                )
+                        val startMs = startStr?.toLongOrNull() ?: continue
+                        val endMs = endStr?.toLongOrNull() ?: continue
+                        val durationMs = durationStr?.toLongOrNull() ?: (endMs - startMs).coerceAtLeast(0)
+                        val startTime = formatTimestamp(startMs)
+                        val endTime = formatTimestamp(endMs)
+                        val duration = formatDuration(durationMs)
+                        val message = applyDelayedLabel(
+                            "📱 App အသုံးပြုမှု\n\nအသုံးပြုခဲ့သည့် App: ${appName ?: packageName}\nPackage: $packageName\n\n$startTime မှ $endTime အထိအသုံးပြုခဲ့ပါသည်။\n\nစုစုပေါင်းအသုံးပြုချိန်: $duration",
+                            endMs,
+                            nowMs
+                        )
+                        queue.add(
+                            PendingReport(
+                                timestamp = endMs,
+                                send = { sendTelegramMessage(token, chatId, message) },
+                                onSuccess = {
+                                    prefs.edit()
+                                        .remove(key)
+                                        .remove("${prefix}${sessionId}_name")
+                                        .remove("${prefix}${sessionId}_start")
+                                        .remove("${prefix}${sessionId}_end")
+                                        .remove("${prefix}${sessionId}_duration")
+                                        .apply()
+                                }
                             )
-                        }
+                        )
                     }
 
                     val interruptionPrefs = context.getSharedPreferences("interruptions", Context.MODE_PRIVATE)
@@ -152,39 +163,43 @@ class TrackingService : Service() {
                         val fromStr = interruptionPrefs.getString("${baseKey}_from", null)
                         val toStr = interruptionPrefs.getString("${baseKey}_to", null)
                         val durationStr = interruptionPrefs.getString("${baseKey}_duration", null)
-                        val fromMs = fromStr?.toLongOrNull()
-                        val toMs = toStr?.toLongOrNull()
-                        val durationMs = durationStr?.toLongOrNull()
-                        if (fromMs != null && toMs != null && durationMs != null) {
-                            val fromTime = formatTimestamp(fromMs)
-                            val toTime = formatTimestamp(toMs)
-                            val duration = formatDuration(durationMs)
-                            val message =
-                                "⚠️ Monitoring Interruption\n\nFrom: $fromTime\nTo: $toTime\nDuration: $duration"
-                            queue.add(
-                                PendingReport(
-                                    timestamp = toMs,
-                                    send = { sendTelegramMessage(token, chatId, message) },
-                                    onSuccess = {
-                                        interruptionPrefs.edit()
-                                            .remove("${baseKey}_from")
-                                            .remove("${baseKey}_to")
-                                            .remove("${baseKey}_duration")
-                                            .apply()
-                                    }
-                                )
+                        val fromMs = fromStr?.toLongOrNull() ?: continue
+                        val toMs = toStr?.toLongOrNull() ?: continue
+                        val durationMs = durationStr?.toLongOrNull() ?: continue
+                        val fromTime = formatTimestamp(fromMs)
+                        val toTime = formatTimestamp(toMs)
+                        val duration = formatDuration(durationMs)
+                        val message = applyDelayedLabel(
+                            "⚠️ Monitoring Interruption\n\nFrom: $fromTime\nTo: $toTime\nDuration: $duration",
+                            toMs,
+                            nowMs
+                        )
+                        queue.add(
+                            PendingReport(
+                                timestamp = toMs,
+                                send = { sendTelegramMessage(token, chatId, message) },
+                                onSuccess = {
+                                    interruptionPrefs.edit()
+                                        .remove("${baseKey}_from")
+                                        .remove("${baseKey}_to")
+                                        .remove("${baseKey}_duration")
+                                        .apply()
+                                }
                             )
-                        }
+                        )
                     }
 
                     if (queue.isNotEmpty()) {
                         queue.sortBy { it.timestamp }
-                        for (item in queue) {
-                            val ok = item.send()
+                        for (i in queue.indices) {
+                            val ok = queue[i].send()
                             if (!ok) {
                                 break
                             }
-                            item.onSuccess()
+                            queue[i].onSuccess()
+                            if (i < queue.lastIndex) {
+                                delay(sendDelayMs)
+                            }
                         }
                     }
                 } finally {
@@ -232,6 +247,11 @@ class TrackingService : Service() {
             } catch (e: Exception) {
                 false
             }
+        }
+
+        private fun applyDelayedLabel(message: String, eventTimeMs: Long, nowMs: Long): String {
+            val delayed = nowMs - eventTimeMs >= delayedLabelThresholdMs
+            return if (delayed) "$delayedLabel\n\n$message" else message
         }
 
         private fun resolveTelegramValue(
@@ -338,8 +358,10 @@ class TrackingService : Service() {
             try {
                 val usageStatsManager = getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
                 val time = System.currentTimeMillis()
+                val lastEventTimeBefore = lastProcessedEventTime
                 val events = usageStatsManager.queryEvents(time - 10000, time)
                 
+                var hadForegroundEvent = false
                 while (events.hasNextEvent()) {
                     val event = UsageEvents.Event()
                     events.getNextEvent(event)
@@ -351,6 +373,7 @@ class TrackingService : Service() {
                     when (event.eventType) {
                         UsageEvents.Event.MOVE_TO_FOREGROUND,
                         UsageEvents.Event.ACTIVITY_RESUMED -> {
+                            hadForegroundEvent = true
                             startSession(event.packageName, event.timeStamp)
                         }
                         UsageEvents.Event.MOVE_TO_BACKGROUND,
@@ -363,8 +386,15 @@ class TrackingService : Service() {
                     }
                 }
 
+                if (hadForegroundEvent) {
+                    return@launch
+                }
+
                 val topApp = resolveTopApp(usageStatsManager, time)
                 if (topApp != null) {
+                    if (topApp.lastTimeUsed <= lastEventTimeBefore) {
+                        return@launch
+                    }
                     if (activeSession == null) {
                         startSession(topApp.packageName, topApp.lastTimeUsed)
                     } else if (activeSession?.packageName != topApp.packageName) {
@@ -417,12 +447,17 @@ class TrackingService : Service() {
             activeSession = null
             return
         }
+        if (packageName == lastStartPackage && startTime - lastStartTime <= startDebounceMs) {
+            return
+        }
         if (activeSession?.packageName == packageName) {
             return
         }
         if (activeSession != null) {
             endSession(startTime)
         }
+        lastStartPackage = packageName
+        lastStartTime = startTime
         activeSession = ActiveSession(packageName, startTime)
         handleAppSessionStart(packageName, startTime)
     }
@@ -572,10 +607,9 @@ class TrackingService : Service() {
         heartbeatRunnable = object : Runnable {
             override fun run() {
                 if (isRunning) {
-                    // Log heartbeat
-                    val prefs = getSharedPreferences("heartbeats", Context.MODE_PRIVATE)
+                    val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
                     val currentTime = System.currentTimeMillis()
-                    prefs.edit().putString("last_heartbeat", currentTime.toString()).apply()
+                    prefs.edit().putString("flutter.last_heartbeat", currentTime.toString()).apply()
                     
                     android.util.Log.d("TrackingService", "Heartbeat: $currentTime")
                     handler.postDelayed(this, 60000) // Every minute

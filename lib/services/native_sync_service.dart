@@ -45,6 +45,7 @@ class NativeSyncService {
   Future<void> syncUsageStarts() async {
     try {
       final prefs = await SharedPreferences.getInstance();
+      await prefs.reload();
       final allKeys = prefs.getKeys();
 
       final startKeys = allKeys
@@ -121,6 +122,7 @@ class NativeSyncService {
   Future<void> syncUsageSessions() async {
     try {
       final prefs = await SharedPreferences.getInstance();
+      await prefs.reload();
       final allKeys = prefs.getKeys();
       print('NativeSync: All SharedPreferences keys count: ${allKeys.length}');
 
@@ -240,6 +242,7 @@ class NativeSyncService {
   Future<void> syncHeartbeats() async {
     try {
       final prefs = await SharedPreferences.getInstance();
+      await prefs.reload();
       // Check for both int and string formats for compatibility
       final lastHeartbeatInt = prefs.getInt('last_heartbeat');
       final lastHeartbeatStr = prefs.getString('last_heartbeat');
@@ -265,6 +268,7 @@ class NativeSyncService {
   Future<void> syncInterruptions() async {
     try {
       final prefs = await SharedPreferences.getInstance();
+      await prefs.reload();
       final keys = prefs
           .getKeys()
           .where((key) => key.startsWith('interruption_'))
